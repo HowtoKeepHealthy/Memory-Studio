@@ -1,0 +1,7 @@
+.tools/
+artifacts/
+app/bin/
+app/obj/
+*.user
+*.mstable
+error.log
