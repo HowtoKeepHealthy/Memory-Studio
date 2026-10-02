@@ -67,7 +67,91 @@ internal static class FeatureSmokeTests
         try { await demoProcess.WaitForExitAsync(timeout.Token); }
         catch (OperationCanceledException) { demoProcess.Kill(); throw new TimeoutException("Bundled demo self-test timed out."); }
         check(demoProcess.ExitCode == 0, "Bundled demo runs without sidecar dependencies");
+        await TraceChildAsync(demo, check);
     }
+
+    private static async Task TraceChildAsync(string demo, Action<bool, string> check)
+    {
+        using var child = Process.Start(new ProcessStartInfo(demo, "--trace-test")
+        {
+            UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true,
+            WorkingDirectory = Path.GetDirectoryName(demo)!
+        }) ?? throw new InvalidOperationException("Trace test child did not start.");
+        try
+        {
+            using var headerTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            string[] header = (await child.StandardOutput.ReadLineAsync(headerTimeout.Token) ?? "").Split(' ');
+            string[] code = (await child.StandardOutput.ReadLineAsync(headerTimeout.Token) ?? "").Split(' ');
+            check(header.Length == 3 && header[0] == "TRACE" && int.Parse(header[1]) == child.Id, "Trace child exposes its own PID and isolated watched page");
+            ulong address = Convert.ToUInt64(header[2], 16);
+            ulong readIp = Convert.ToUInt64(code[1].Split('=')[1], 16);
+            ulong writeIp = Convert.ToUInt64(code[2].Split('=')[1], 16);
+            ulong neighbourIp = Convert.ToUInt64(code[3].Split('=')[1], 16);
+            using var reader = new NativeEngine(child.Id);
+            using (var pause = reader.PauseMemoryAccess())
+            {
+                bool blocked = false;
+                try { reader.Read(address, 4); } catch (InvalidOperationException) { blocked = true; }
+                check(blocked, "Ordinary memory reads are paused during source tracing");
+            }
+            check(reader.Read(address, 4).Length == 4, "Memory reads resume after the trace pause is released");
+            foreach (bool writesOnly in new[] { false, true })
+            {
+                using var trace = new AccessTraceService(child.Id, address, 4, writesOnly);
+                await Task.Run(trace.Start);
+                var timer = Stopwatch.StartNew();
+                while (timer.ElapsedMilliseconds < 3500)
+                {
+                    trace.Poll();
+                    if (!trace.State.IsRunning) throw new InvalidOperationException($"Trace stopped unexpectedly: {trace.LastError}");
+                    if (trace.AcceptedEvents >= 8 && (writesOnly || trace.FilteredEvents >= 4)) break;
+                    await Task.Delay(30);
+                }
+                await Task.Run(trace.Stop);
+                check(!trace.State.IsAttached && !trace.State.IsRunning, $"{(writesOnly ? "Write" : "Access")} trace detaches cleanly");
+                check(trace.Hits.Any(h => (h.Access & TracedMemoryAccess.Write) != 0 && h.InstructionPointer >= writeIp && h.InstructionPointer < writeIp + 16), "Real trace identifies the exact writing instruction");
+                check(trace.Hits.All(h => h.InstructionPointer < neighbourIp || h.InstructionPointer >= neighbourIp + 24), "Real trace excludes reads and writes to a neighbour on the same page");
+                if (writesOnly)
+                    check(trace.Hits.All(h => (h.Access & TracedMemoryAccess.Write) != 0), "Write-only trace filters out pure reads after reattachment");
+                else
+                {
+                    check(trace.Hits.Any(h => h.Access == TracedMemoryAccess.Read && h.InstructionPointer >= readIp && h.InstructionPointer < readIp + 16), "Real trace identifies the exact reading instruction");
+                    check(trace.FilteredEvents > 0 && trace.Hits.Any(h => h.Count > 1), "Trace filters page noise and aggregates repeated instructions");
+                }
+                check(VirtualQueryEx(child.Handle, (nint)address, out var page, (nuint)Marshal.SizeOf<MemoryBasicInformation>()) != 0 && page.Protect == 0x04, "Stopping restores the original page protection");
+                int before = BitConverter.ToInt32(reader.Read(address, 4));
+                await Task.Delay(180);
+                int after = BitConverter.ToInt32(reader.Read(address, 4));
+                check(!child.HasExited && after > before, "Target continues executing and changing values after debugger detach");
+            }
+            using (var trace = new AccessTraceService(child.Id, address, 4, false))
+            {
+                await Task.Run(trace.Start);
+                child.Kill();
+                using var exitTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                await child.WaitForExitAsync(exitTimeout.Token);
+                var exitTimer = Stopwatch.StartNew();
+                while (trace.State.IsRunning && exitTimer.ElapsedMilliseconds < 3000) await Task.Delay(20);
+                try { await Task.Run(trace.Stop); } catch (InvalidOperationException) { /* Target exit is reported as a trace error. */ }
+                check(!trace.State.IsAttached && !trace.State.IsRunning, "Target exit releases the debugger and stops the trace session");
+            }
+        }
+        finally
+        {
+            if (!child.HasExited) { child.Kill(); await child.WaitForExitAsync(); }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MemoryBasicInformation
+    {
+        public nint BaseAddress, AllocationBase;
+        public uint AllocationProtect;
+        public ushort PartitionId;
+        public nuint RegionSize;
+        public uint State, Protect, Type;
+    }
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern nuint VirtualQueryEx(nint process, nint address, out MemoryBasicInformation information, nuint length);
 
     [DllImport("kernel32.dll", SetLastError = true)] private static extern nint VirtualAlloc(nint address, nuint size, uint allocationType, uint protection);
     [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] private static extern bool VirtualProtect(nint address, nuint size, uint protection, out uint oldProtection);

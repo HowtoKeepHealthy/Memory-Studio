@@ -24,6 +24,10 @@
 
 先构建 `memory_core.dll`；测试失败返回退出码 1，无法装载 DLL 或初始化失败返回 2，全部通过返回 0。
 
+运行根目录 `build.cmd -Test` 还会执行应用内的 `SmokeTests` / `FeatureSmokeTests`，报告写入 `artifacts/managed-test.txt`。这些检查覆盖真实 WPF ViewModel 扫描、写值、冻结、逐列编辑、混合类型批量验证、跨页加载全部结果、批量添加/去重/删除，以及 x86/x64 指令解码、分支目标和不可读页边界。
+
+访问来源测试会启动隐藏的自建 `DemoTarget.exe --trace-test` 子进程，检查准确读写指令、同页相邻地址过滤、重复命中聚合、停止后页面保护恢复及目标继续执行、再次附加写入追踪，以及目标退出后会话释放。测试只终止它自己创建的子进程。窗口拾取测试使用测试窗口的 HWND 验证 PID、子窗口归属与无效目标过滤。
+
 `DemoTarget.exe` 是供界面实际附加的演示目标，显示 PID 和可搜索字段地址。初始 Health 为 Int32 `100`、Gold 为 Int32 `2500`、Speed 为 Float32 `1.25`，这些值只通过键盘操作改变；Tick 每秒变化。
 
 ```powershell

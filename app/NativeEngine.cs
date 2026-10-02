@@ -26,6 +26,7 @@ public sealed class NativeEngine : IDisposable
     private readonly object _gate = new();
     private readonly object _lifetimeGate = new();
     private string _lastScanError = "";
+    private bool _memoryAccessPaused;
     public NativeEngine(int pid)
     {
         _session = Native.ms_open((uint)pid);
@@ -48,6 +49,7 @@ public sealed class NativeEngine : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            ThrowIfMemoryAccessPaused();
             var pin = GCHandle.Alloc(value.Length == 0 ? new byte[1] : value, GCHandleType.Pinned);
             try
             {
@@ -67,6 +69,7 @@ public sealed class NativeEngine : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            ThrowIfMemoryAccessPaused();
             var addresses = new ulong[capacity];
             uint count = Native.ms_get_results(_session, offset, addresses, capacity);
             var rows = new List<ResultRow>((int)count);
@@ -74,7 +77,7 @@ public sealed class NativeEngine : IDisposable
             {
                 var bytes = new byte[size];
                 bool ok = Native.ms_read(_session, addresses[i], bytes, (uint)size) == 0;
-                rows.Add(new ResultRow(addresses[i], ok ? bytes : [], ok ? ValueCodec.Format(type, bytes) : "不可读取", ValueCodec.TypeLabel(type)));
+                rows.Add(new ResultRow(addresses[i], ok ? bytes : [], ok ? ValueCodec.Format(type, bytes) : "不可读取", ValueCodec.TypeLabel(type), type, size));
             }
             return rows;
         }
@@ -84,6 +87,7 @@ public sealed class NativeEngine : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            ThrowIfMemoryAccessPaused();
             var bytes = new byte[size];
             int status = Native.ms_read(_session, address, bytes, (uint)size);
             if (status != 0) throw new InvalidOperationException(Error());
@@ -95,6 +99,7 @@ public sealed class NativeEngine : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
+            ThrowIfMemoryAccessPaused();
             if (Native.ms_write(_session, address, bytes, (uint)bytes.Length) != 0) throw new InvalidOperationException(Error());
         }
     }
@@ -104,6 +109,19 @@ public sealed class NativeEngine : IDisposable
         lock (_gate) { lock (_lifetimeGate) { if (_session == 0) return; Native.ms_close(_session); _session = 0; } }
     }
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_session == 0, this);
+    private void ThrowIfMemoryAccessPaused()
+    {
+        if (_memoryAccessPaused) throw new InvalidOperationException("来源追踪期间已暂停普通内存读写。关闭追踪窗口后即可继续。");
+    }
+    public IDisposable PauseMemoryAccess()
+    {
+        lock (_gate) { ThrowIfDisposed(); _memoryAccessPaused = true; }
+        return new AccessPause(this);
+    }
+    private sealed class AccessPause(NativeEngine engine) : IDisposable
+    {
+        public void Dispose() { lock (engine._gate) engine._memoryAccessPaused = false; }
+    }
     private static class Native
     {
         private const string Dll = "memory_core.dll";

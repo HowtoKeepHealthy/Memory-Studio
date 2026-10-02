@@ -9,10 +9,12 @@
         <Style x:Key="InstructionCell" TargetType="TextBlock" BasedOn="{StaticResource AddressCell}">
             <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
             <Setter Property="FontSize" Value="13" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
         <Style x:Key="CodeBytesCell" TargetType="TextBlock" BasedOn="{StaticResource AddressCell}">
             <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
             <Setter Property="FontSize" Value="11" />
+            <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
     </Window.Resources>
     <Grid Margin="22,20,22,0">

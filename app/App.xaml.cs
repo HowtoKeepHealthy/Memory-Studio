@@ -62,6 +62,15 @@ public partial class App : Application
                 capture.ShowInTaskbar = false; capture.Left = -15000; capture.Top = -15000;
                 await Task.Delay(800);
             }
+            if (e.Args.Contains("--edit-type"))
+            {
+                capture = new RecordEditorWindow(new RecordEditRequest(RecordEditKind.Type, "100", 2, 4, "已选择 12 项"))
+                {
+                    Owner = window, WindowStartupLocation = WindowStartupLocation.Manual, Left = -15000, Top = -15000
+                };
+                capture.Show();
+                await Task.Delay(100);
+            }
             capture.UpdateLayout();
             var content = capture.Content as FrameworkElement;
             int imageWidth = (int)Math.Ceiling(content != null ? content.ActualWidth + content.Margin.Left + content.Margin.Right : capture.ActualWidth);

@@ -43,6 +43,6 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 $libraryPath = Join-Path $OutputDirectory 'memory_core.dll'
 $importPath = Join-Path $OutputDirectory 'libmemory_core.dll.a'
 $optimization = if ($DebugBuild) { '-O0' } else { '-O2' }
-& $compiler '-std=c++20' $optimization '-g' '-Wall' '-Wextra' '-Wpedantic' '-shared' '-static' '-static-libgcc' '-static-libstdc++' '-Wl,--dynamicbase,--nxcompat' "-Wl,--out-implib,$importPath" (Join-Path $projectRoot 'native\memory_core.cpp') '-o' $libraryPath
+& $compiler '-std=c++20' $optimization '-g' '-Wall' '-Wextra' '-Wpedantic' '-shared' '-static' '-static-libgcc' '-static-libstdc++' '-Wl,--dynamicbase,--nxcompat' "-Wl,--out-implib,$importPath" (Join-Path $projectRoot 'native\memory_core.cpp') (Join-Path $projectRoot 'native\trace_core.cpp') '-o' $libraryPath
 if ($LASTEXITCODE -ne 0) { throw "Native compiler failed with exit code $LASTEXITCODE." }
 Write-Host "Built $libraryPath"

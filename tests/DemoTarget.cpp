@@ -23,11 +23,66 @@ static void show_values(const DemoValues& v) {
                 v.health, v.gold, v.speed, v.tick);
 }
 
+#if defined(_MSC_VER)
+#define TRACE_NOINLINE __declspec(noinline)
+#else
+#define TRACE_NOINLINE __attribute__((noinline))
+#endif
+
+// Distinct non-inlined instructions make read/write breakpoint results unambiguous.
+static TRACE_NOINLINE std::int32_t trace_read_watched(volatile std::int32_t* pointer) {
+    return *pointer;
+}
+
+static TRACE_NOINLINE void trace_write_watched(volatile std::int32_t* pointer, std::int32_t value) {
+    *pointer = value;
+}
+
+static TRACE_NOINLINE std::int32_t trace_read_write_neighbour(volatile std::int32_t* pointer) {
+    std::int32_t value = *pointer;
+    *pointer = value + 1;
+    return value;
+}
+
+static int run_trace_test() {
+    void* memory = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!memory) {
+        std::fprintf(stderr, "Trace VirtualAlloc failed: %lu\n", GetLastError());
+        return 1;
+    }
+    auto* watched = new (memory) volatile std::int32_t(100);
+    // Keep the neighbour outside even an eight-byte hardware watchpoint range.
+    auto* neighbour = new (static_cast<std::uint8_t*>(memory) + 64) volatile std::int32_t(200);
+    std::printf("TRACE %lu %016llX\n", GetCurrentProcessId(),
+                static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(watched)));
+    std::printf("CODE read=%016llX write=%016llX neighbour=%016llX\n",
+                static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(&trace_read_watched)),
+                static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(&trace_write_watched)),
+                static_cast<unsigned long long>(reinterpret_cast<std::uintptr_t>(&trace_read_write_neighbour)));
+    std::fflush(stdout);
+    const ULONGLONG started = GetTickCount64();
+    std::uint32_t iteration = 0;
+    volatile std::int32_t sink = 0;
+    while (GetTickCount64() - started < 30000) {
+        switch (iteration % 3) {
+        case 0: sink = trace_read_watched(watched); break;
+        case 1: trace_write_watched(watched, 100 + static_cast<std::int32_t>(iteration)); break;
+        case 2: sink = trace_read_write_neighbour(neighbour); break;
+        }
+        ++iteration;
+        Sleep(20);
+    }
+    (void)sink;
+    VirtualFree(memory, 0, MEM_RELEASE);
+    return 0;
+}
+
 int main(int argc, char** argv) {
     if (argc == 2 && std::strcmp(argv[1], "--self-test") == 0) {
         DemoValues sample;
         return sample.health == 100 && sample.gold == 2500 && sample.speed == 1.25f ? 0 : 1;
     }
+    if (argc == 2 && std::strcmp(argv[1], "--trace-test") == 0) return run_trace_test();
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleTitleW(L"MemoryStudio - Demo Target");
     void* memory = VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);

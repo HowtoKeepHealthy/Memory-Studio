@@ -48,6 +48,58 @@ internal static class SmokeTests
             Check(vm.Results.Count == 1 && vm.Results[0].ValueText == "987654323", "ViewModel increased rescan");
             vm.RemoveWatchCommand.Execute(null);
             Check(vm.Watches.Count == 0, "Watch removed");
+            var record = vm.Results[0];
+            await vm.ApplyRecordEditAsync(record, RecordEditKind.Value, new RecordEditResult("12345", record.Type, record.ByteSize));
+            Check(Marshal.ReadInt32(block, 16) == 12345 && record.ValueText == "12345", "Result value editor writes the selected record");
+            await vm.ApplyRecordEditAsync(record, RecordEditKind.Type, new RecordEditResult("", 0, 1));
+            Check(record.Type == 0 && record.ByteSize == 1 && record.ValueText == "57", "Result type editor reinterprets the same memory");
+            vm.SelectedResult = record; vm.AddSelectedCommand.Execute(null);
+            var editedWatch = vm.Watches.Single();
+            Check(editedWatch.Type == 0 && editedWatch.Size == 1, "Adding an edited result preserves its type and width");
+            Marshal.WriteByte(block, 64, 7);
+            editedWatch.IsFrozen = true;
+            await vm.ApplyRecordEditAsync(editedWatch, RecordEditKind.Address, new RecordEditResult($"0x{(ulong)block + 64:X}", 0, 1));
+            Check(editedWatch.Address == (ulong)block + 64 && editedWatch.ValueText == "7" && !editedWatch.IsFrozen, "Address editor reads the new address and disables freezing");
+            await vm.ApplyRecordEditAsync(editedWatch, RecordEditKind.Description, new RecordEditResult("生命值追踪", 0, 1));
+            Check(editedWatch.Description == "生命值追踪", "Description editor updates the actual watch row");
+            bool invalidEditRejected = false;
+            try { await vm.ApplyRecordEditAsync(editedWatch, RecordEditKind.Type, new RecordEditResult("", 7, 3)); }
+            catch (ArgumentException) { invalidEditRejected = true; }
+            Check(invalidEditRejected && editedWatch.Type == 0, "Invalid UTF-16 width leaves the record unchanged");
+            Marshal.WriteByte(block, 80, 9);
+            var secondWatch = new WatchRow { Address = (ulong)block + 80, Type = 0, Size = 1, FrozenValue = [9], ValueText = "9", Description = "第二项" };
+            vm.Watches.Add(secondWatch);
+            await vm.ApplyRecordsEditAsync([editedWatch, secondWatch], RecordEditKind.Value, new RecordEditResult("42", 0, 1));
+            Check(Marshal.ReadByte(block, 64) == 42 && Marshal.ReadByte(block, 80) == 42, "Batch value editing writes every selected record");
+            bool invalidBatchRejected = false;
+            try { await vm.ApplyRecordsEditAsync([record, editedWatch], RecordEditKind.Value, new RecordEditResult("999", 2, 4)); }
+            catch (ArgumentException) { invalidBatchRejected = true; }
+            Check(invalidBatchRejected && Marshal.ReadByte(block, 64) == 42, "Batch validation prevents all writes when one type cannot accept the value");
+            await vm.HandleRecordsActionAsync([editedWatch, secondWatch], "freeze");
+            Check(editedWatch.IsFrozen && secondWatch.IsFrozen, "Batch freeze includes every selected watch");
+            await vm.HandleRecordsActionAsync([editedWatch, secondWatch], "unfreeze");
+            Check(!editedWatch.IsFrozen && !secondWatch.IsFrozen, "Batch unfreeze includes every selected watch");
+            await vm.HandleRecordsActionAsync([editedWatch, secondWatch], "remove-watch");
+            Check(vm.Watches.Count == 0, "Batch removal acts on the selected watch set");
+            vm.SelectedType = vm.TypeOptions.Single(t => t.Value == 2);
+            vm.SelectedScanMode = vm.ScanModes[0]; vm.SearchValue = "0";
+            await vm.ScanAsync(false);
+            Check(vm.Results.Count == 200 && vm.NextPageCommand.CanExecute(null), "Large scan initially displays a bounded page");
+            ulong editedCandidate = vm.Results[0].SourceAddress;
+            await vm.ApplyRecordEditAsync(vm.Results[0], RecordEditKind.Type, new RecordEditResult("", 0, 1));
+            Check(await vm.SelectAllScanResultsAsync() && vm.Results.Count > 1000 && !vm.NextPageCommand.CanExecute(null), "Select all spans every scan result page");
+            Check(vm.Results.Single(r => r.SourceAddress == editedCandidate).Type == 0, "Cross-page selection preserves per-record type changes");
+            var allResults = vm.Results.Cast<object>().ToArray();
+            await vm.HandleRecordsActionAsync(allResults, "add-watch");
+            Check(vm.Watches.Count == allResults.Length, "Cross-page batch addition includes every scan result");
+            await vm.HandleRecordsActionAsync(allResults, "add-watch");
+            Check(vm.Watches.Count == allResults.Length, "Repeated batch addition avoids duplicate watch entries");
+            await vm.ApplyRecordsEditAsync(vm.Watches.Cast<object>().ToArray(), RecordEditKind.Value, new RecordEditResult("42", 2, 4));
+            Check(vm.Watches.All(w => Marshal.ReadInt32((nint)w.Address) == 42), "All watch entries with mixed types can be changed in one batch");
+            await vm.ApplyRecordsEditAsync(vm.Watches.Cast<object>().ToArray(), RecordEditKind.Type, new RecordEditResult("", 2, 4));
+            Check(vm.Watches.All(w => w.Type == 2 && w.Size == 4 && w.ValueText == "42"), "Batch type changes reinterpret every selected watch consistently");
+            await vm.HandleRecordsActionAsync(vm.Watches.Cast<object>().ToArray(), "remove-watch");
+            Check(vm.Watches.Count == 0, "All watch entries can be removed in one batch");
             lines.Add("PASS: all ViewModel workflow checks.");
             File.AppendAllLines(reportPath, lines); return 0;
         }

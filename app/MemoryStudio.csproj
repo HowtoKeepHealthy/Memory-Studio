@@ -17,6 +17,7 @@
     <Content Include="..\artifacts\native\memory_core.dll" Condition="Exists('..\artifacts\native\memory_core.dll')" Link="memory_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="..\artifacts\native\DemoTarget.exe" Condition="Exists('..\artifacts\native\DemoTarget.exe')" LogicalName="MemoryStudio.Assets.DemoTarget.exe" />
     <Resource Include="Assets\app.ico" />
+    <EmbeddedResource Include="Assets\ThirdPartyNotices.txt" LogicalName="MemoryStudio.Assets.ThirdPartyNotices.txt" />
     <PackageReference Include="Iced" Version="1.21.0" />
   </ItemGroup>
 </Project>

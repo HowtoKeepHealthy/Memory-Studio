@@ -18,7 +18,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _watchTimer = new() { Interval = TimeSpan.FromMilliseconds(500) };
     private readonly DispatcherTimer _progressTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private Task? _watchJob;
-    private bool _watchUpdating, _disposed, _isBusy, _hasScan;
+    private CancellationTokenSource? _batchCancellation;
+    private bool _watchUpdating, _disposed, _isBusy, _hasScan, _showingAllResults;
     private int _scanType = 2, _scanSize = 4;
     private ulong _page, _total;
     private ProcessItem? _selectedProcess;
@@ -31,9 +32,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _alignmentEnabled = true, _writableOnly = true;
     private double _scanProgress;
     private readonly List<object> _commands = [];
+    private readonly Dictionary<ulong, (ulong Address, int Type, int Size)> _resultOverrides = [];
     public ObservableCollection<ProcessItem> Processes { get; } = [];
-    public ObservableCollection<ResultRow> Results { get; } = [];
-    public ObservableCollection<WatchRow> Watches { get; } = [];
+    public RecordCollection<ResultRow> Results { get; } = [];
+    public RecordCollection<WatchRow> Watches { get; } = [];
     public IReadOnlyList<Option> TypeOptions => ValueCodec.Types;
     public IReadOnlyList<Option> ScanModes { get; } = [new("精确数值", 0), new("未知初始值", 1), new("数值发生变化", 2), new("数值保持不变", 3), new("数值增加", 4), new("数值减少", 5)];
     public ICommand RefreshProcessesCommand { get; }
@@ -62,9 +64,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FirstScanCommand = Async(() => ScanAsync(false), () => IsAttached && !IsBusy && SelectedScanMode.Value <= 1);
         NextScanCommand = Async(() => ScanAsync(true), () => IsAttached && _hasScan && !IsBusy && SelectedScanMode.Value != 1);
         NewScanCommand = Command(NewScan, () => !IsBusy);
-        CancelScanCommand = Command(() => { _engine?.Cancel(); StatusText = "正在取消扫描…"; }, () => IsBusy);
-        PreviousPageCommand = Async(() => ChangePage(-1), () => !IsBusy && _page > 0);
-        NextPageCommand = Async(() => ChangePage(1), () => !IsBusy && (_page + 1) * PageSize < _total);
+        CancelScanCommand = Command(() => { _batchCancellation?.Cancel(); _engine?.Cancel(); StatusText = "正在停止当前操作…"; }, () => IsBusy);
+        PreviousPageCommand = Async(() => ChangePage(-1), () => !IsBusy && !_showingAllResults && _page > 0);
+        NextPageCommand = Async(() => ChangePage(1), () => !IsBusy && !_showingAllResults && (_page + 1) * PageSize < _total);
         AddSelectedCommand = Command(AddSelected, () => IsAttached && !IsBusy && SelectedResult != null && SelectedResult.RawValue.Length > 0);
         OpenMemoryViewerCommand = Command(() =>
         {
@@ -104,7 +106,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public string ElapsedText { get => _elapsedText; private set => Set(ref _elapsedText, value); }
     public double ScanProgress { get => _scanProgress; private set => Set(ref _scanProgress, value); }
     public string ResultSummary => _hasScan ? $"{_total:N0} 个匹配地址" : "等待首次扫描";
-    public string PageLabel => _total == 0 ? "0 / 0" : $"{_page + 1:N0} / {(_total + PageSize - 1) / PageSize:N0}";
+    public string PageLabel => _total == 0 ? "0 / 0" : _showingAllResults ? $"全部 {_total:N0} 项" : $"{_page + 1:N0} / {(_total + PageSize - 1) / PageSize:N0}";
     private RelayCommand Command(Action action, Func<bool> canExecute)
     {
         var command = new RelayCommand(() => { try { action(); } catch (Exception ex) { StatusText = FriendlyError(ex); } }, canExecute);
@@ -200,7 +202,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     }
     private void NewScan()
     {
-        Results.Clear(); SelectedResult = null; _hasScan = false; _total = 0; _page = 0;
+        _resultOverrides.Clear();
+        Results.Clear(); SelectedResult = null; _hasScan = false; _showingAllResults = false; _total = 0; _page = 0;
         ScanProgress = 0; ElapsedText = "等待扫描"; SelectedScanMode = ScanModes[0];
         Notify(nameof(ResultSummary)); Notify(nameof(PageLabel)); RefreshCommands();
         StatusText = IsAttached ? "扫描条件已重置。可以开始新的首次扫描。" : "选择进程并连接，或启动演示进程体验扫描。";
@@ -229,10 +232,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             UpdateProgress();
             if (status == 5) { StatusText = "扫描已取消，上次成功的结果已保留。"; return; }
             if (status != 0) { string error = engine.LastScanError; throw new InvalidOperationException(status == 6 ? "候选地址超过 2,000,000 个。请缩小地址范围或使用更精确的条件；上次结果已保留。" : error); }
-            _scanType = type; _scanSize = size; _hasScan = true; _page = 0; _total = engine.Count;
+            _resultOverrides.Clear();
+            _scanType = type; _scanSize = size; _hasScan = true; _showingAllResults = false; _page = 0; _total = engine.Count;
             await LoadPageAsync(); ScanProgress = 100;
             Notify(nameof(ResultSummary)); Notify(nameof(PageLabel));
-            StatusText = _total > 0 ? $"扫描完成，找到 {_total:N0} 个地址。双击结果可添加到地址表。" : "未找到匹配地址。检查类型、数值或关闭「仅扫描可写区域」后重试。";
+            StatusText = _total > 0 ? $"扫描完成，找到 {_total:N0} 个地址。双击按列编辑；Ctrl+A 全选全部结果，右键批量操作。" : "未找到匹配地址。检查类型、数值或关闭「仅扫描可写区域」后重试。";
             if (mode == 1) SelectedScanMode = ScanModes[2];
         }
         finally { _progressTimer.Stop(); IsBusy = false; }
@@ -248,7 +252,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (_engine == null) return;
         var engine = _engine; ulong offset = _page * PageSize;
-        var rows = await Task.Run(() => engine.Page(offset, PageSize, _scanType, _scanSize));
+        var overrides = _resultOverrides.ToDictionary(p => p.Key, p => p.Value);
+        var rows = await Task.Run(() =>
+        {
+            var page = engine.Page(offset, PageSize, _scanType, _scanSize);
+            foreach (var row in page)
+                if (overrides.TryGetValue(row.SourceAddress, out var format))
+                {
+                    byte[] bytes;
+                    try { bytes = engine.Read(format.Address, format.Size); } catch (InvalidOperationException) { bytes = []; }
+                    row.Apply(format.Address, format.Type, format.Size, bytes);
+                }
+            return page;
+        });
         Results.Clear(); foreach (var row in rows) Results.Add(row);
         SelectedResult = null; Notify(nameof(PageLabel));
     }
@@ -258,12 +274,60 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         try { _page = delta > 0 ? _page + 1 : _page - 1; await LoadPageAsync(); }
         finally { IsBusy = false; }
     }
+    public async Task<bool> SelectAllScanResultsAsync()
+    {
+        if (_disposed || IsBusy || _engine == null || !_hasScan || _total == 0) return false;
+        if (_showingAllResults || (ulong)Results.Count == _total) return true;
+        var engine = _engine;
+        var overrides = _resultOverrides.ToDictionary(p => p.Key, p => p.Value);
+        IsBusy = true; ScanProgress = 0;
+        using var cancellation = new CancellationTokenSource();
+        _batchCancellation = cancellation;
+        try
+        {
+            if (_watchJob != null) await _watchJob;
+            var all = new List<ResultRow>((int)_total);
+            for (ulong offset = 0; offset < _total; offset += 1000)
+            {
+                cancellation.Token.ThrowIfCancellationRequested();
+                var page = await Task.Run(() =>
+                {
+                    var rows = engine.Page(offset, (uint)Math.Min(1000, _total - offset), _scanType, _scanSize);
+                    foreach (var row in rows)
+                        if (overrides.TryGetValue(row.SourceAddress, out var format))
+                        {
+                            byte[] bytes;
+                            try { bytes = engine.Read(format.Address, format.Size); } catch (InvalidOperationException) { bytes = []; }
+                            row.Apply(format.Address, format.Type, format.Size, bytes);
+                        }
+                    return rows;
+                });
+                all.AddRange(page);
+                ScanProgress = 100.0 * all.Count / _total;
+                StatusText = $"正在准备全部扫描结果：{all.Count:N0} / {_total:N0}，可点击停止取消…";
+            }
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (_disposed) return false;
+            Results.ReplaceAll(all); SelectedResult = null; _showingAllResults = true;
+            Notify(nameof(PageLabel));
+            StatusText = $"已载入全部 {_total:N0} 个扫描结果，可全选后右键批量操作。";
+            return true;
+        }
+        catch (OperationCanceledException) { StatusText = "已取消全选准备，当前结果页保持不变。"; return false; }
+        catch (Exception ex) { StatusText = FriendlyError(ex); return false; }
+        finally { _batchCancellation = null; IsBusy = false; }
+    }
     private void AddSelected()
     {
         if (SelectedResult == null) return;
-        var existing = Watches.FirstOrDefault(w => w.Address == SelectedResult.Address && w.Type == _scanType);
+        AddResult(SelectedResult);
+    }
+    private void AddResult(ResultRow result)
+    {
+        if (result.RawValue.Length == 0) throw new InvalidOperationException("此地址当前不可读取。");
+        var existing = Watches.FirstOrDefault(w => w.Address == result.Address && w.Type == result.Type);
         if (existing != null) { SelectedWatch = existing; StatusText = "此地址已在地址表中。"; return; }
-        var row = new WatchRow { Address = SelectedResult.Address, Type = _scanType, Size = _scanSize, FrozenValue = SelectedResult.RawValue.ToArray(), ValueText = SelectedResult.ValueText, Description = $"地址 {Watches.Count + 1}" };
+        var row = new WatchRow { Address = result.Address, Type = result.Type, Size = result.ByteSize, FrozenValue = result.RawValue.ToArray(), ValueText = result.ValueText, Description = $"地址 {Watches.Count + 1}" };
         Watches.Add(row); SelectedWatch = row; RefreshCommands();
         StatusText = "已加入地址表。选中地址后可修改数值，勾选锁定可持续写入保存的值。";
     }
@@ -287,6 +351,302 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         if (SelectedWatch == null) return;
         Watches.Remove(SelectedWatch); SelectedWatch = null; RefreshCommands();
+    }
+    private static (ulong Address, int Type, int Size, string Value) RecordData(object row) => row switch
+    {
+        ResultRow result => (result.Address, result.Type, result.ByteSize, result.ValueText),
+        WatchRow watch => (watch.Address, watch.Type, watch.Size, watch.ValueText),
+        _ => throw new ArgumentException("请先选择一条有效记录。")
+    };
+    public async Task HandleRecordsActionAsync(IReadOnlyList<object> rows, string action)
+    {
+        if (_disposed || rows.Count == 0) return;
+        var selection = rows.Distinct().ToArray();
+        if (selection.Length == 1 && action is not ("freeze" or "unfreeze"))
+        {
+            await HandleRecordActionAsync(selection[0], action); return;
+        }
+        try
+        {
+            if (action.StartsWith("copy-", StringComparison.Ordinal))
+            {
+                Clipboard.SetText(string.Join(Environment.NewLine, selection.Select(row =>
+                {
+                    var data = RecordData(row);
+                    return action switch
+                    {
+                        "copy-address" => $"0x{data.Address:X16}",
+                        "copy-value" => data.Value,
+                        "copy-record" => $"{(row as WatchRow)?.Description ?? "扫描结果"}\t0x{data.Address:X16}\t{ValueCodec.TypeLabel(data.Type)}\t{data.Value}",
+                        _ => throw new ArgumentException("未知复制操作。")
+                    };
+                })));
+                StatusText = $"已复制 {selection.Length:N0} 条记录。"; return;
+            }
+            if (IsBusy) { StatusText = "当前操作尚未完成，请稍后编辑记录。"; return; }
+            if (action is "edit-value" or "edit-type" or "edit-description")
+            {
+                var data = RecordData(selection[0]);
+                var kind = action == "edit-value" ? RecordEditKind.Value : action == "edit-type" ? RecordEditKind.Type : RecordEditKind.Description;
+                string initial = kind == RecordEditKind.Description ? (selection[0] as WatchRow)?.Description ?? "" : data.Value;
+                var request = new RecordEditRequest(kind, initial, data.Type, data.Size, $"已选择 {selection.Length:N0} 项");
+                var edited = RecordEditorWindow.Edit(Application.Current.MainWindow, request);
+                if (edited != null) await ApplyRecordsEditAsync(selection, kind, edited);
+                return;
+            }
+            if (action is "hex" or "disassemble" or "trace-write" or "trace-access" or "edit-address")
+            { StatusText = "此操作请只选择一条记录。"; return; }
+            int completed = 0, failed = 0;
+            IsBusy = true;
+            using var cancellation = new CancellationTokenSource();
+            _batchCancellation = cancellation;
+            try
+            {
+                if (_watchJob != null) await _watchJob;
+                if (action == "add-watch")
+                {
+                    var existing = Watches.Select(w => (w.Address, w.Type)).ToHashSet();
+                    var additions = new List<WatchRow>();
+                    int skipped = 0;
+                    foreach (var row in selection.OfType<ResultRow>())
+                    {
+                        if (cancellation.IsCancellationRequested || _disposed) break;
+                        if (row.RawValue.Length == 0) failed++;
+                        else if (!existing.Add((row.Address, row.Type))) skipped++;
+                        else
+                        {
+                            additions.Add(new WatchRow { Address = row.Address, Type = row.Type, Size = row.ByteSize,
+                                FrozenValue = row.RawValue.ToArray(), ValueText = row.ValueText, Description = $"地址 {Watches.Count + additions.Count + 1}" });
+                            completed++;
+                        }
+                        if ((completed + failed + skipped) % 200 == 0) await Task.Yield();
+                    }
+                    if (_disposed) return;
+                    var combined = Watches.Concat(additions).ToArray();
+                    Watches.ReplaceAll(combined);
+                    SelectedWatch = additions.LastOrDefault() ?? SelectedWatch;
+                    StatusText = $"{(cancellation.IsCancellationRequested ? "已停止添加" : "批量添加完成")}：新增 {completed:N0} 项，已存在 {skipped:N0} 项，不可读取 {failed:N0} 项。";
+                    return;
+                }
+                if (action == "remove-watch")
+                {
+                    var remove = selection.OfType<WatchRow>().ToHashSet();
+                    foreach (var watch in remove) watch.IsFrozen = false;
+                    var remaining = Watches.Where(w => !remove.Contains(w)).ToArray();
+                    completed = Watches.Count - remaining.Length;
+                    Watches.ReplaceAll(remaining);
+                    if (SelectedWatch != null && remove.Contains(SelectedWatch)) SelectedWatch = null;
+                    StatusText = $"已从地址表移除 {completed:N0} 项。";
+                    return;
+                }
+                foreach (var row in selection)
+                {
+                    if (cancellation.IsCancellationRequested || _disposed) break;
+                    try
+                    {
+                        if (action == "add-watch" && row is ResultRow result) { AddResult(result); completed++; }
+                        else if (row is WatchRow watch)
+                        {
+                            if (action == "remove-watch") { watch.IsFrozen = false; Watches.Remove(watch); if (SelectedWatch == watch) SelectedWatch = null; completed++; }
+                            else if (action is "unfreeze" or "freeze")
+                            {
+                                if (action == "freeze")
+                                {
+                                    var engine = _engine ?? throw new InvalidOperationException("进程连接已关闭。");
+                                    byte[] bytes = await Task.Run(() => engine.Read(watch.Address, watch.Size));
+                                    watch.FrozenValue = bytes; watch.ValueText = ValueCodec.Format(watch.Type, bytes);
+                                }
+                                watch.IsFrozen = action == "freeze"; completed++;
+                            }
+                        }
+                    }
+                    catch { failed++; }
+                }
+                StatusText = $"{(cancellation.IsCancellationRequested ? "已停止" : "批量操作完成")}：成功 {completed:N0} 项" + (failed > 0 ? $"，失败 {failed:N0} 项（地址不可读取或连接已失效）。" : "。");
+            }
+            finally { _batchCancellation = null; IsBusy = false; }
+        }
+        catch (Exception ex) { StatusText = FriendlyError(ex); }
+    }
+    public async Task ApplyRecordsEditAsync(IReadOnlyList<object> rows, RecordEditKind kind, RecordEditResult edited)
+    {
+        if (_disposed || IsBusy) throw new InvalidOperationException("当前无法编辑记录。");
+        if (kind == RecordEditKind.Address) throw new ArgumentException("批量修改地址可能合并记录，请逐条修改地址。");
+        var plans = rows.Distinct().Select(row =>
+        {
+            var data = RecordData(row);
+            var request = new RecordEditRequest(kind, data.Value, data.Type, data.Size, $"0x{data.Address:X16}");
+            RecordEditResult value;
+            try { value = RecordEditorWindow.Validate(request, edited.Text, edited.Type, edited.ByteSize); }
+            catch (ArgumentException ex) { throw new ArgumentException($"0x{data.Address:X16}：{ex.Message} 尚未写入任何记录。"); }
+            if (kind == RecordEditKind.Description && row is not WatchRow) throw new ArgumentException("仅地址表支持描述。");
+            int type = kind == RecordEditKind.Type ? value.Type : data.Type;
+            int size = kind == RecordEditKind.Type ? value.ByteSize : data.Size;
+            byte[] bytes = kind == RecordEditKind.Value ? ValueCodec.Parse(type, value.Text) : [];
+            return (Row: row, data.Address, Type: type, Size: size, Value: value, Bytes: bytes);
+        }).ToArray();
+        var engine = _engine ?? throw new InvalidOperationException("请先连接进程。");
+        IsBusy = true; ScanProgress = 0;
+        using var cancellation = new CancellationTokenSource();
+        _batchCancellation = cancellation;
+        try
+        {
+            if (_watchJob != null) await _watchJob;
+            int completed = 0, failed = 0;
+            string? firstError = null;
+            foreach (var plan in plans)
+            {
+                if (cancellation.IsCancellationRequested || _disposed) break;
+                try
+                {
+                    byte[] bytes = plan.Bytes;
+                    if (kind == RecordEditKind.Value) await Task.Run(() => engine.Write(plan.Address, bytes));
+                    else if (kind == RecordEditKind.Type) bytes = await Task.Run(() => engine.Read(plan.Address, plan.Size));
+                    if (_disposed) break;
+                    if (plan.Row is ResultRow result)
+                    {
+                        result.Apply(plan.Address, plan.Type, plan.Size, bytes);
+                        if (kind == RecordEditKind.Type) _resultOverrides[result.SourceAddress] = (plan.Address, plan.Type, plan.Size);
+                    }
+                    else if (plan.Row is WatchRow watch)
+                    {
+                        if (kind == RecordEditKind.Description) watch.Description = plan.Value.Text;
+                        else
+                        {
+                            if (kind == RecordEditKind.Type) watch.IsFrozen = false;
+                            watch.Type = plan.Type; watch.Size = plan.Size; watch.FrozenValue = bytes; watch.ValueText = ValueCodec.Format(plan.Type, bytes);
+                            if (SelectedWatch == watch) EditValueText = watch.ValueText;
+                        }
+                    }
+                    completed++;
+                }
+                catch (Exception ex) { failed++; firstError ??= ex.Message; }
+                ScanProgress = 100.0 * (completed + failed) / plans.Length;
+                StatusText = $"批量编辑：已处理 {completed + failed:N0} / {plans.Length:N0} 项…";
+            }
+            StatusText = $"{(cancellation.IsCancellationRequested ? "已停止" : "批量编辑完成")}：成功 {completed:N0} / {plans.Length:N0} 项" +
+                (failed > 0 ? $"，失败 {failed:N0} 项；{firstError}" : "。");
+        }
+        finally { _batchCancellation = null; IsBusy = false; }
+    }
+    public async Task HandleRecordActionAsync(object row, string action)
+    {
+        if (_disposed) return;
+        try
+        {
+            var data = RecordData(row);
+            if (action.StartsWith("copy-", StringComparison.Ordinal))
+            {
+                string text = action switch
+                {
+                    "copy-address" => $"0x{data.Address:X16}",
+                    "copy-value" => data.Value,
+                    "copy-record" => $"{(row as WatchRow)?.Description ?? "扫描结果"}\t0x{data.Address:X16}\t{ValueCodec.TypeLabel(data.Type)}\t{data.Value}",
+                    _ => throw new ArgumentException("未知复制操作。")
+                };
+                Clipboard.SetText(text); StatusText = "已复制到剪贴板。"; return;
+            }
+            if (IsBusy) { StatusText = "当前操作尚未完成，请稍后编辑记录。"; return; }
+            var engine = _engine ?? throw new InvalidOperationException("请先连接进程。");
+            if (action.StartsWith("edit-", StringComparison.Ordinal))
+            {
+                RecordEditKind kind = action switch { "edit-value" => RecordEditKind.Value, "edit-address" => RecordEditKind.Address, "edit-type" => RecordEditKind.Type, "edit-description" => RecordEditKind.Description, _ => throw new ArgumentException("未知编辑操作。") };
+                if (kind == RecordEditKind.Description && row is not WatchRow) return;
+                string initial = kind switch { RecordEditKind.Address => $"0x{data.Address:X16}", RecordEditKind.Description => ((WatchRow)row).Description, _ => data.Value };
+                var request = new RecordEditRequest(kind, initial, data.Type, data.Size, $"0x{data.Address:X16}");
+                var edited = RecordEditorWindow.Edit(Application.Current.MainWindow, request);
+                if (edited != null) await ApplyRecordEditAsync(row, kind, edited);
+                return;
+            }
+            switch (action)
+            {
+                case "add-watch" when row is ResultRow result: AddResult(result); break;
+                case "remove-watch" when row is WatchRow watch:
+                    watch.IsFrozen = false; Watches.Remove(watch);
+                    if (SelectedWatch == watch) SelectedWatch = null;
+                    RefreshCommands(); StatusText = "地址已从监视表移除。"; break;
+                case "toggle-freeze" when row is WatchRow watch:
+                    if (watch.IsFrozen) { watch.IsFrozen = false; StatusText = "已取消冻结。"; }
+                    else
+                    {
+                        IsBusy = true;
+                        try
+                        {
+                            if (_watchJob != null) await _watchJob;
+                            byte[] bytes = await Task.Run(() => engine.Read(watch.Address, watch.Size));
+                            watch.FrozenValue = bytes; watch.ValueText = ValueCodec.Format(watch.Type, bytes); watch.IsFrozen = true;
+                            StatusText = "已冻结此地址的当前值。";
+                        }
+                        finally { IsBusy = false; }
+                    }
+                    break;
+                case "hex": new HexViewerWindow(engine, data.Address) { Owner = Application.Current.MainWindow }.Show(); break;
+                case "disassemble": new DisassemblyWindow(engine, _attachedProcessId, data.Address) { Owner = Application.Current.MainWindow }.Show(); break;
+                case "trace-write":
+                case "trace-access":
+                    IsBusy = true;
+                    try
+                    {
+                        if (_watchJob != null) await _watchJob;
+                        using var pause = engine.PauseMemoryAccess();
+                        new AccessTraceWindow(_attachedProcessId, data.Address, data.Size, action == "trace-write") { Owner = Application.Current.MainWindow }.ShowDialog();
+                    }
+                    finally { IsBusy = false; }
+                    StatusText = "来源追踪窗口已关闭，扫描和地址监视已恢复。";
+                    break;
+            }
+        }
+        catch (Exception ex) { StatusText = FriendlyError(ex); }
+    }
+    public async Task ApplyRecordEditAsync(object row, RecordEditKind kind, RecordEditResult edited)
+    {
+        if (_disposed || IsBusy) throw new InvalidOperationException("当前无法编辑记录。");
+        var data = RecordData(row);
+        var request = new RecordEditRequest(kind, data.Value, data.Type, data.Size, $"0x{data.Address:X16}");
+        var validated = RecordEditorWindow.Validate(request, edited.Text, edited.Type, edited.ByteSize);
+        if (kind == RecordEditKind.Description)
+        {
+            if (row is WatchRow named) named.Description = validated.Text;
+            StatusText = "描述已更新。"; return;
+        }
+        var engine = _engine ?? throw new InvalidOperationException("请先连接进程。");
+        ulong address = kind == RecordEditKind.Address ? ValueCodec.Address(validated.Text) : data.Address;
+        int type = kind == RecordEditKind.Type ? validated.Type : data.Type;
+        int size = kind == RecordEditKind.Type ? validated.ByteSize : data.Size;
+        IsBusy = true;
+        try
+        {
+            if (_watchJob != null) await _watchJob;
+            if (_disposed) return;
+            byte[] bytes;
+            if (kind == RecordEditKind.Value)
+            {
+                bytes = ValueCodec.Parse(type, validated.Text);
+                await Task.Run(() => engine.Write(address, bytes));
+            }
+            else bytes = await Task.Run(() => engine.Read(address, size));
+            if (_disposed) return;
+            if (row is ResultRow result)
+            {
+                result.Apply(address, type, size, bytes);
+                if (kind is RecordEditKind.Type or RecordEditKind.Address) _resultOverrides[result.SourceAddress] = (address, type, size);
+            }
+            else if (row is WatchRow watch)
+            {
+                if (kind is RecordEditKind.Type or RecordEditKind.Address) watch.IsFrozen = false;
+                watch.Address = address; watch.Type = type; watch.Size = size;
+                watch.FrozenValue = bytes; watch.ValueText = ValueCodec.Format(type, bytes);
+                if (SelectedWatch == watch) EditValueText = watch.ValueText;
+            }
+            StatusText = kind switch
+            {
+                RecordEditKind.Value => $"已写入 0x{address:X16}。",
+                RecordEditKind.Type when row is ResultRow => "这一行的读取类型已更新；重新扫描会生成新的结果列表。",
+                RecordEditKind.Address when row is ResultRow => "这一行的地址已更新；重新扫描会生成新的结果列表。",
+                _ => "记录已更新，冻结已关闭。"
+            };
+        }
+        finally { IsBusy = false; }
     }
     private async Task UpdateWatchesAsync()
     {
@@ -327,9 +687,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var dialog = new OpenFileDialog { Filter = "Memory Studio 地址表|*.mstable" };
         if (dialog.ShowDialog() != true) return;
         var file = new FileInfo(dialog.FileName);
-        if (file.Length > 2_000_000) throw new ArgumentException("地址表文件过大。");
+        if (file.Length > 512L * 1024 * 1024) throw new ArgumentException("地址表文件超过 512 MB，请拆分后加载。");
         var table = JsonSerializer.Deserialize<TableFile>(File.ReadAllText(dialog.FileName)) ?? throw new ArgumentException("地址表格式无效。");
-        if (table.Version != 1 || table.Entries == null || table.Entries.Count > 2000) throw new ArgumentException("地址表版本或条目数量无效。");
+        if (table.Version != 1 || table.Entries == null || table.Entries.Count > 2_000_000) throw new ArgumentException("地址表版本或条目数量无效。");
         var pending = new List<WatchRow>();
         foreach (var entry in table.Entries)
         {
@@ -340,7 +700,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             try { bytes = _engine!.Read(address, entry.Size); } catch { }
             pending.Add(new WatchRow { Address = address, Type = entry.Type, Size = entry.Size, Description = entry.Description ?? "未命名地址", FrozenValue = bytes.Length > 0 ? bytes : new byte[entry.Size], ValueText = bytes.Length > 0 ? ValueCodec.Format(entry.Type, bytes) : "不可读取" });
         }
-        foreach (var watch in pending) if (!Watches.Any(w => w.Address == watch.Address && w.Type == watch.Type)) Watches.Add(watch);
+        var known = Watches.Select(w => (w.Address, w.Type)).ToHashSet();
+        var combined = Watches.Concat(pending.Where(w => known.Add((w.Address, w.Type)))).ToArray();
+        Watches.ReplaceAll(combined);
         RefreshCommands(); StatusText = $"已加载 {pending.Count} 个条目；锁定默认关闭。进程重启后请重新扫描确认地址。";
     }
     public void Dispose()

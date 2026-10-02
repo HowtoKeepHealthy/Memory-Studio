@@ -22,6 +22,8 @@ public static class DisassemblyService
         ArgumentNullException.ThrowIfNull(bytes);
         if (bitness is not (32 or 64)) throw new ArgumentOutOfRangeException(nameof(bitness), "请选择 32 或 64 位指令模式。");
         if (bitness == 32 && ip > uint.MaxValue) throw new ArgumentOutOfRangeException(nameof(ip), "32 位指令地址不能超过 0xFFFFFFFF。");
+        if (bitness == 32 && (ulong)bytes.Length > 0x1_0000_0000UL - ip)
+            throw new ArgumentOutOfRangeException(nameof(bytes), "输入字节不能跨越 32 位地址空间末尾。");
         if (ip > ulong.MaxValue - (ulong)bytes.Length) throw new ArgumentOutOfRangeException(nameof(ip));
         var reader = new ByteArrayCodeReader(bytes);
         var decoder = Decoder.Create(bitness, reader, ip);
@@ -90,6 +92,7 @@ public static class DisassemblyService
             int pageRemaining = Environment.SystemPageSize - (int)(cursor % (ulong)Environment.SystemPageSize);
             int size = Math.Min(pageRemaining, desired - collected.Count);
             try { collected.AddRange(engine.Read(cursor, size)); }
+            catch (ObjectDisposedException) { throw; }
             catch (InvalidOperationException ex)
             {
                 // Never join bytes across an unreadable gap. Find only a readable prefix of this same chunk.
@@ -114,6 +117,7 @@ public static class DisassemblyService
         {
             int size = low + (high - low + 1) / 2;
             try { best = engine.Read(address, size); low = size; }
+            catch (ObjectDisposedException) { throw; }
             catch (InvalidOperationException) { high = size - 1; }
         }
         return best;

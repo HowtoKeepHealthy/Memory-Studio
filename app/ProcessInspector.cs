@@ -75,6 +75,7 @@ public static class ProcessInspector
             }
         }
         catch (Win32Exception ex) { warning = $"模块列表读取不完整：{ex.Message}。可继续使用地址输入。"; }
+        catch (ObjectDisposedException) { throw; }
         catch (InvalidOperationException ex) { warning = $"目标进程或模块已经变化：{ex.Message}"; }
         return new ProcessInspection(architecture, modules, warning);
     }
@@ -94,6 +95,7 @@ public static class ProcessInspector
             uint entryRva = BitConverter.ToUInt32(header, 40);
             return entryRva != 0 && entryRva < moduleSize && baseAddress <= ulong.MaxValue - entryRva ? baseAddress + entryRva : null;
         }
+        catch (ObjectDisposedException) { throw; }
         catch (InvalidOperationException) { return null; }
     }
 
