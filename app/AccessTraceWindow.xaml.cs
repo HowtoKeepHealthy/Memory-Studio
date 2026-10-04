@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 
 namespace MemoryStudio;
@@ -17,6 +18,12 @@ public partial class AccessTraceWindow : Window
     private AccessTraceService? _service;
     private bool _transition, _allowClose, _closing;
     private Task? _stopTask;
+    private Task<bool>? _closeTask;
+    private bool _browsing;
+    private readonly HashSet<Window> _browsers = new();
+    // During an asynchronous attach/detach, avoid blocking the dispatcher on the service lock.
+    public bool HasProtectedPages => _transition || _service?.State.IsAttached == true;
+    public Func<Task>? BeforeStart { get; set; }
 
     public AccessTraceWindow(int processId, ulong address, int size, bool writesOnly)
     {
@@ -30,15 +37,17 @@ public partial class AccessTraceWindow : Window
         _timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(250) };
         _timer.Tick += Timer_Tick;
         Closing += Window_Closing;
+        SetButtons();
     }
 
     private async void StartButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_transition || _closing) return;
+        if (_transition || _closing || _browsers.Count > 0) return;
         _transition = true; SetButtons();
         StatusLabel.Text = "正在调试附加并设置监控页面…";
         try
         {
+            if (BeforeStart != null) await BeforeStart();
             _service?.Dispose();
             _service = new AccessTraceService(_processId, _address, _size, _writesOnly);
             await Task.Run(_service.Start);
@@ -119,8 +128,22 @@ public partial class AccessTraceWindow : Window
     {
         if (_allowClose) return;
         e.Cancel = true;
-        if (_closing) return;
+        await CloseSafelyAsync();
+    }
+
+    /// <summary>Owners must call this before closing themselves: WPF skips owned Closing events.</summary>
+    public Task<bool> CloseSafelyAsync()
+    {
+        if (_allowClose) return Task.FromResult(true);
+        if (_closeTask is { IsCompleted: false }) return _closeTask;
+        return _closeTask = CloseCoreAsync();
+    }
+
+    private async Task<bool> CloseCoreAsync()
+    {
         _closing = true; SetButtons();
+        // Close can also be requested before Start. Never call Close reentrantly inside Closing.
+        await Task.Yield();
         try
         {
             // If attachment is still in progress, give it time to settle before detaching.
@@ -131,27 +154,31 @@ public partial class AccessTraceWindow : Window
                 _closing = false;
                 StatusLabel.Text = "目标仍处于调试附加状态；请重试停止，解除附加后才能关闭。";
                 SetButtons();
-                return;
+                return false;
             }
             _service?.Dispose();
             _timer.Stop();
             _allowClose = true;
             Close();
+            return true;
         }
         catch (Exception ex)
         {
             _closing = false;
             StatusLabel.Text = "关闭前的恢复未完成：" + ex.Message;
             SetButtons();
+            return false;
         }
     }
 
     private void SetButtons()
     {
         bool attached = !_transition && _service?.State.IsAttached == true;
-        StartButton.IsEnabled = !_transition && !_closing && !attached;
+        StartButton.IsEnabled = !_transition && !_closing && !attached && _browsers.Count == 0;
+        StartButton.ToolTip = _browsers.Count > 0 ? "请先关闭本次打开的浏览器，再重新开始追踪，以免浏览操作触碰监控页。" : null;
         StopButton.IsEnabled = !_transition && !_closing && attached;
         ClearButton.IsEnabled = !_transition && !_closing && !attached;
+        BrowseButton.IsEnabled = !_transition && !_closing && !_browsing && HitGrid.SelectedItem is AccessTraceHit;
     }
 
     private void UpdateStatistics()
@@ -172,7 +199,53 @@ public partial class AccessTraceWindow : Window
         StatisticsLabel.Text = "结果已清空";
     }
 
-    private void HitGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) => ShowSelected();
+    private void HitGrid_SelectionChanged(object sender, SelectionChangedEventArgs e) { ShowSelected(); SetButtons(); }
+
+    public async Task BrowseSelectedAsync()
+    {
+        if (_transition || _closing || _browsing || HitGrid.SelectedItem is not AccessTraceHit hit) return;
+        _browsing = true; SetButtons();
+        try
+        {
+            // Preserve the captured IP/registers. Browsers display live memory only after detach.
+            await StopAsync();
+            if (_closing || _service?.State.IsAttached == true)
+            {
+                if (!_closing) StatusLabel.Text = "调试附加尚未解除；请重试停止，解除后才能打开浏览器。";
+                return;
+            }
+            ulong dataAddress = hit.Latest.MemoryAddress;
+            var codeEngine = new NativeEngine(_processId);
+            DisassemblyWindow code;
+            try { code = new DisassemblyWindow(codeEngine, _processId, hit.InstructionPointer, dataAddress, ownsEngine: true) { Owner = this }; }
+            catch { codeEngine.Dispose(); throw; }
+            TrackBrowser(code);
+            try { code.Show(); } catch { _browsers.Remove(code); codeEngine.Dispose(); throw; }
+            var dataEngine = new NativeEngine(_processId);
+            HexViewerWindow data;
+            try { data = new HexViewerWindow(dataEngine, dataAddress, _processId, ownsEngine: true) { Owner = this }; }
+            catch { dataEngine.Dispose(); throw; }
+            TrackBrowser(data);
+            try { data.Show(); } catch { _browsers.Remove(data); dataEngine.Dispose(); throw; }
+            code.Activate();
+            StatusLabel.Text = "已解除附加并保留捕获结果。浏览器显示停止后的实时代码/数据；寄存器仍是所选来源的最后一次捕获快照。";
+        }
+        catch (Exception ex) { StatusLabel.Text = "无法打开来源浏览器：" + ex.Message; }
+        finally { _browsing = false; SetButtons(); }
+    }
+    private void TrackBrowser(Window window)
+    {
+        _browsers.Add(window);
+        window.Closed += (_, _) => { _browsers.Remove(window); if (!_allowClose) SetButtons(); };
+    }
+    private async void BrowseButton_Click(object sender, RoutedEventArgs e) => await BrowseSelectedAsync();
+    private async void HitGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (ItemsControl.ContainerFromElement(HitGrid, e.OriginalSource as DependencyObject) is not DataGridRow) return;
+        e.Handled = true; await BrowseSelectedAsync();
+    }
+    private async void HitGrid_PreviewKeyDown(object sender, KeyEventArgs e)
+    { if (e.Key == Key.Enter) { e.Handled = true; await BrowseSelectedAsync(); } }
 
     private void ShowSelected()
     {

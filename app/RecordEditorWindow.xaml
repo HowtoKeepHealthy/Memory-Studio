@@ -20,6 +20,7 @@
             <TextBlock x:Name="FieldLabel" Text="新内容" Style="{StaticResource FieldLabel}" />
             <TextBox x:Name="ContentInput" FontSize="14" TextChanged="Input_TextChanged"
                      AutomationProperties.Name="记录编辑内容" />
+            <CheckBox x:Name="RadixInput" Content="十六进制（浮点数显示位模式）" Margin="0,10,0,0" Click="RadixInput_Click" />
         </StackPanel>
         <StackPanel Grid.Row="2" x:Name="TypePane" Visibility="Collapsed" Margin="0,21,0,0">
             <TextBlock Text="数据类型" Style="{StaticResource FieldLabel}" />

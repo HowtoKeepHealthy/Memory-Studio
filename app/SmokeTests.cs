@@ -15,6 +15,7 @@ internal static class SmokeTests
         try
         {
             await FeatureSmokeTests.RunAsync(Check);
+            await EnhancedSmokeTests.RunAsync(Check);
             block = Marshal.AllocHGlobal(4096);
             Marshal.Copy(new byte[4096], 0, block, 4096);
             Marshal.WriteInt32(block, 16, 987654321);

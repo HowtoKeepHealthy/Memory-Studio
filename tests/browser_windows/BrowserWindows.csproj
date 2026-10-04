@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <PlatformTarget>x64</PlatformTarget>
+    <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
+    <EnableDefaultPageItems>false</EnableDefaultPageItems>
+    <RepositoryRoot Condition="'$(RepositoryRoot)' == ''">$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..'))</RepositoryRoot>
+    <AppSourcePath Condition="'$(AppSourcePath)' == ''">$(RepositoryRoot)\app</AppSourcePath>
+    <NativeDllPath Condition="'$(NativeDllPath)' == ''">$(RepositoryRoot)\artifacts\native\memory_core.dll</NativeDllPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(AppSourcePath)\*.cs" Exclude="$(AppSourcePath)\App.xaml.cs;$(AppSourcePath)\*SmokeTests.cs" Link="%(Filename)%(Extension)" />
+    <Page Include="$(AppSourcePath)\*.xaml" Exclude="$(AppSourcePath)\App.xaml" Link="%(Filename)%(Extension)" />
+    <Content Include="$(NativeDllPath)" Link="memory_core.dll" CopyToOutputDirectory="PreserveNewest" />
+    <EmbeddedResource Include="$(RepositoryRoot)\artifacts\native\nasm.exe" LogicalName="MemoryStudio.Assets.nasm.exe" />
+    <EmbeddedResource Include="$(RepositoryRoot)\artifacts\native\DemoTarget.exe" LogicalName="MemoryStudio.Assets.DemoTarget.exe" />
+    <PackageReference Include="Iced" Version="1.21.0" />
+  </ItemGroup>
+</Project>

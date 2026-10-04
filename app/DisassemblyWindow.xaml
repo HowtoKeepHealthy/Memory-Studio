@@ -1,7 +1,7 @@
 <Window x:Class="MemoryStudio.DisassemblyWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Memory Studio · 反汇编" Width="1220" Height="760" MinWidth="1080" MinHeight="560"
+        Title="Memory Studio · 反汇编" Width="1220" Height="790" MinWidth="960" MinHeight="580"
         WindowStartupLocation="CenterOwner" UseLayoutRounding="True"
         Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
@@ -16,8 +16,11 @@
             <Setter Property="FontSize" Value="11" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
+        <Style x:Key="BoundaryRow" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
+            <Style.Triggers><DataTrigger Binding="{Binding IsBoundaryUncertain}" Value="True"><Setter Property="Foreground" Value="#E8BE71" /></DataTrigger></Style.Triggers>
+        </Style>
     </Window.Resources>
-    <Grid Margin="22,20,22,0">
+    <Grid x:Name="AppearanceRoot" Margin="22,20,22,0">
         <Grid.RowDefinitions>
             <RowDefinition Height="68" /><RowDefinition Height="58" /><RowDefinition Height="58" />
             <RowDefinition Height="42" /><RowDefinition Height="*" /><RowDefinition Height="40" />
@@ -26,7 +29,7 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <StackPanel>
                 <TextBlock Text="反汇编查看器" FontSize="22" FontWeight="SemiBold" />
-                <TextBlock Text="从指定起点顺序解码。扫描结果可能位于数据区；显示为有效指令不代表它是代码。"
+                <TextBlock Text="以指定指令为中心连续浏览。反向边界未确定的行标为黄色；有效解码也可能来自数据。"
                            Style="{StaticResource MutedText}" Margin="0,5,0,0" />
             </StackPanel>
             <Border Grid.Column="1" CornerRadius="5" Background="{StaticResource AccentSoftBrush}" Padding="12,6" VerticalAlignment="Top" Margin="0,4,0,0">
@@ -47,7 +50,7 @@
                 <ColumnDefinition Width="Auto" /><ColumnDefinition Width="230" /><ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" /><ColumnDefinition Width="155" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" />
             </Grid.ColumnDefinitions>
-            <TextBlock Text="解码起点" Style="{StaticResource MutedText}" Margin="0,0,12,0" />
+            <TextBlock Text="指令地址" Style="{StaticResource MutedText}" Margin="0,0,12,0" />
             <TextBox Grid.Column="1" x:Name="AddressInput" FontFamily="Consolas" FontSize="13" KeyDown="AddressInput_KeyDown"
                      ToolTip="十六进制地址，支持 0x 前缀；按 Enter 读取" AutomationProperties.Name="反汇编起始地址" />
             <Button Grid.Column="2" x:Name="GoButton" Content="读取指令" Click="GoButton_Click" Margin="9,0,15,0" />
@@ -57,14 +60,21 @@
             </ComboBox>
             <StackPanel Grid.Column="6" Orientation="Horizontal" Margin="12,0,0,0">
                 <Button x:Name="BackButton" Content="返回" Click="BackButton_Click" Margin="0,0,7,0" ToolTip="返回上一个跳转地址" />
-                <Button x:Name="PreviousButton" Content="‹  前 512 B" Click="PreviousButton_Click" Margin="0,0,7,0" ToolTip="起点回移 512 字节；可变长度指令可能需要重新确认边界" />
-                <Button x:Name="NextButton" Content="下一段  ›" Click="NextButton_Click" ToolTip="从当前最后一条指令之后继续" />
+                <Button x:Name="PreviousButton" Content="加载前段" Click="PreviousButton_Click" Margin="0,0,7,0" ToolTip="向前连续加载，保留当前选中项和滚动位置" />
+                <Button x:Name="NextButton" Content="加载后段" Click="NextButton_Click" ToolTip="从当前最后一条完整指令之后继续加载" />
             </StackPanel>
         </Grid>
         <Grid Grid.Row="3">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <TextBlock x:Name="ArchitectureLabel" Text="正在查询目标进程…" Style="{StaticResource MutedText}" FontSize="11" />
-            <Button Grid.Column="1" x:Name="CopyButton" Content="复制选中指令" Style="{StaticResource GhostButton}" Click="CopyButton_Click" FontSize="11" />
+            <TextBlock x:Name="ArchitectureLabel" Text="正在查询目标进程…" Style="{StaticResource MutedText}" FontSize="11" TextTrimming="CharacterEllipsis" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="DataButton" Content="数据内存" Style="{StaticResource CompactButton}" Click="DataButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="PatchButton" Content="机器码 / 汇编" Style="{StaticResource CompactButton}" Click="PatchButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="NopButton" Content="替换 NOP" Style="{StaticResource CompactButton}" Click="NopButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="RestoreButton" Content="恢复原码" Style="{StaticResource CompactButton}" Click="RestoreButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="UndoButton" Content="撤销" Style="{StaticResource CompactButton}" Click="UndoButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="CopyButton" Content="复制" Style="{StaticResource CompactButton}" Click="CopyButton_Click" Margin="6,0,0,0" />
+            </StackPanel>
         </Grid>
         <Border Grid.Row="4" Style="{StaticResource Card}">
             <Grid>
@@ -72,14 +82,19 @@
                 <Grid Margin="16,0">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
                     <TextBlock x:Name="RangeLabel" Text="等待读取" Style="{StaticResource MutedText}" FontFamily="Consolas" FontSize="11" />
-                    <TextBlock Grid.Column="1" Text="双击直接分支跟随目标 · Alt + ← 返回 · Ctrl + C 复制" Style="{StaticResource MutedText}" FontSize="11" />
+                    <TextBlock Grid.Column="1" Text="滚动触边连续加载 · F5 刷新 · Ctrl + Z 撤销" Style="{StaticResource MutedText}" FontSize="11" />
                 </Grid>
                 <DataGrid Grid.Row="1" x:Name="InstructionGrid" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow"
                           CanUserSortColumns="False" CanUserReorderColumns="False" RowHeight="30" ColumnHeaderHeight="34"
                           MouseDoubleClick="InstructionGrid_MouseDoubleClick" PreviewKeyDown="InstructionGrid_PreviewKeyDown"
+                          PreviewMouseWheel="InstructionGrid_PreviewMouseWheel" SelectionChanged="InstructionGrid_SelectionChanged"
+                          RowStyle="{StaticResource BoundaryRow}" ScrollViewer.CanContentScroll="True"
                           AutomationProperties.Name="反汇编指令列表">
                     <DataGrid.ContextMenu>
-                        <ContextMenu><MenuItem Header="跟随分支目标" Click="FollowBranch_Click" /><MenuItem Header="复制选中指令" Click="CopyButton_Click" /></ContextMenu>
+                        <ContextMenu><MenuItem Header="跟随分支目标" Click="FollowBranch_Click" /><MenuItem Header="查看数据内存" Click="DataButton_Click" />
+                            <Separator /><MenuItem Header="编辑选中机器码" Click="PatchButton_Click" /><MenuItem Header="用 NOP 替换选中指令" Click="NopButton_Click" />
+                            <MenuItem Header="恢复此处原码" Click="RestoreButton_Click" /><MenuItem Header="撤销最近的内存修改" Click="UndoButton_Click" />
+                            <Separator /><MenuItem Header="复制选中指令" Click="CopyButton_Click" /></ContextMenu>
                     </DataGrid.ContextMenu>
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="指令地址" Binding="{Binding AddressText}" Width="168" ElementStyle="{StaticResource AddressCell}" />

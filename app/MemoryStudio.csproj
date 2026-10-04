@@ -10,12 +10,13 @@
     <AssemblyName>MemoryStudio</AssemblyName>
     <RootNamespace>MemoryStudio</RootNamespace>
     <ApplicationManifest>app.manifest</ApplicationManifest>
-    <Version>0.2.0</Version>
+    <Version>0.3.0</Version>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup>
     <Content Include="..\artifacts\native\memory_core.dll" Condition="Exists('..\artifacts\native\memory_core.dll')" Link="memory_core.dll" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <EmbeddedResource Include="..\artifacts\native\DemoTarget.exe" Condition="Exists('..\artifacts\native\DemoTarget.exe')" LogicalName="MemoryStudio.Assets.DemoTarget.exe" />
+    <EmbeddedResource Include="..\artifacts\native\nasm.exe" Condition="Exists('..\artifacts\native\nasm.exe')" LogicalName="MemoryStudio.Assets.nasm.exe" />
     <Resource Include="Assets\app.ico" />
     <EmbeddedResource Include="Assets\ThirdPartyNotices.txt" LogicalName="MemoryStudio.Assets.ThirdPartyNotices.txt" />
     <PackageReference Include="Iced" Version="1.21.0" />

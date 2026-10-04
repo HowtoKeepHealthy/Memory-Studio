@@ -3,12 +3,13 @@ using Iced.Intel;
 namespace MemoryStudio;
 
 public sealed record DisassemblyRow(ulong Address, int Length, byte[] Bytes, string Instruction,
-    ulong? BranchTarget, bool IsInvalid, bool IsTruncated, string Note)
+    ulong? BranchTarget, bool IsInvalid, bool IsTruncated, string Note, bool IsBoundaryUncertain = false)
 {
     public string AddressText => $"0x{Address:X16}";
     public string BytesText => string.Join(" ", Bytes.Select(b => b.ToString("X2")));
     public string BranchTargetText => BranchTarget is ulong address ? $"0x{address:X16}" : "—";
     public ulong NextAddress => Address + (ulong)Length;
+    public string BoundaryText => IsBoundaryUncertain ? "边界未确定" : "已知起点";
 }
 
 public sealed record DisassemblyReadResult(ulong StartAddress, ulong NextAddress,
@@ -17,6 +18,59 @@ public sealed record DisassemblyReadResult(ulong StartAddress, ulong NextAddress
 /// <summary>Decode a contiguous snapshot of target memory. This service never writes to the process.</summary>
 public static class DisassemblyService
 {
+    /// <summary>
+    /// There is no unique inverse x86 decoder. A known earlier instruction start is required
+    /// for a reliable backward region; merely landing on endAddress is not proof of alignment.
+    /// </summary>
+    public static DisassemblyReadResult ReadBefore(NativeEngine engine, ulong endAddress, int bitness,
+        int byteCount = 512, ulong? knownAnchor = null)
+    {
+        if (byteCount is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(byteCount));
+        if (endAddress == 0) return new(0, 0, [], 0, 0, "已到达地址空间起点。");
+        ulong start = endAddress > (ulong)byteCount ? endAddress - (ulong)byteCount : 0;
+        bool anchored = knownAnchor is ulong anchor && anchor < endAddress && endAddress - anchor <= 65536;
+        if (anchored) start = knownAnchor!.Value;
+        int size = checked((int)(endAddress - start));
+        var read = ReadWindow(engine, start, bitness, size);
+        byte[] bytes = read.Rows.SelectMany(row => row.Bytes).Take(size).ToArray();
+        if (bytes.Length != size)
+            throw new InvalidOperationException(read.BoundaryMessage ?? "前方存在不可读边界，无法连续加载到当前指令。");
+        var rows = DecodeBefore(bytes, start, endAddress, bitness, anchored);
+        return new(rows.Count > 0 ? rows[0].Address : endAddress, endAddress, rows, bytes.Length, size,
+            anchored && rows.All(r => !r.IsBoundaryUncertain) ? read.BoundaryMessage :
+            "反向区域的指令边界未确定：已尝试对齐至当前起点，可能是数据或另一种合法拆分。请选择已知入口/指令起点确认；黄色行不能直接作为可靠补丁边界。");
+    }
+
+    public static IReadOnlyList<DisassemblyRow> DecodeBefore(byte[] bytes, ulong startAddress,
+        ulong endAddress, int bitness, bool reliableStart)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        if (endAddress < startAddress || endAddress - startAddress != (ulong)bytes.Length)
+            throw new ArgumentException("反向字节范围必须恰好结束于已知指令起点。");
+        var direct = Decode(bytes, startAddress, bitness);
+        if (reliableStart && direct.All(r => !r.IsTruncated) && (direct.Count == 0 || direct[^1].NextAddress == endAddress))
+            return direct;
+        // Try possible initial alignments. Every inferred row remains explicitly uncertain,
+        // even when the stream converges on the known ending boundary without invalid opcodes.
+        IReadOnlyList<DisassemblyRow>? best = null;
+        int bestOffset = 0, bestInvalid = int.MaxValue;
+        for (int offset = 0; offset < Math.Min(15, bytes.Length); ++offset)
+        {
+            var candidate = Decode(bytes.AsSpan(offset).ToArray(), startAddress + (ulong)offset, bitness);
+            if (candidate.Count == 0 || candidate.Any(r => r.IsTruncated) || candidate[^1].NextAddress != endAddress) continue;
+            int invalid = candidate.Count(r => r.IsInvalid);
+            if (invalid >= bestInvalid) continue;
+            best = candidate; bestOffset = offset; bestInvalid = invalid;
+        }
+        var result = new List<DisassemblyRow>();
+        int rawPrefix = best == null ? bytes.Length : bestOffset;
+        for (int i = 0; i < rawPrefix; ++i)
+            result.Add(new(startAddress + (ulong)i, 1, [bytes[i]], $"db 0x{bytes[i]:X2}", null, true, false, "边界未确定 · 原始字节", true));
+        if (best != null)
+            result.AddRange(best.Select(r => r with { IsBoundaryUncertain = true, Note = "边界未确定" + (r.Note.Length > 0 ? " · " + r.Note : "") }));
+        return result;
+    }
+
     public static IReadOnlyList<DisassemblyRow> Decode(byte[] bytes, ulong ip, int bitness)
     {
         ArgumentNullException.ThrowIfNull(bytes);

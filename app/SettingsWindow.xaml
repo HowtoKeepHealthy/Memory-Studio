@@ -1,0 +1,29 @@
+<Window x:Class="MemoryStudio.SettingsWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="显示与窗口设置 · Memory Studio" Width="490" Height="470" MinWidth="390" MinHeight="330"
+        WindowStartupLocation="CenterOwner" Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13" UseLayoutRounding="True">
+    <Grid Margin="22">
+        <Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,20"><TextBlock Text="调整你的工作台" FontSize="21" FontWeight="SemiBold" /><TextBlock Text="实时应用于所有工具窗口" Style="{StaticResource MutedText}" Margin="0,6,0,0" /></StackPanel>
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+            <StackPanel MinWidth="300">
+                <Border Style="{StaticResource Card}" Padding="17"><StackPanel>
+                    <Grid><TextBlock Text="界面缩放" Style="{StaticResource SectionTitle}" /><TextBlock Text="{Binding ScalePercent, StringFormat={}{0:0}%}" HorizontalAlignment="Right" Foreground="{StaticResource AccentBrush}" FontFamily="Consolas" FontSize="16" /></Grid>
+                    <Slider Minimum="60" Maximum="150" TickFrequency="5" IsSnapToTickEnabled="True" Value="{Binding ScalePercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,13,0,7" ToolTip="60% 到 150%；也可 Ctrl + 鼠标滚轮调整" />
+                    <Grid><TextBlock Text="60%" Style="{StaticResource MutedText}" FontSize="10" /><TextBlock Text="150%" HorizontalAlignment="Right" Style="{StaticResource MutedText}" FontSize="10" /></Grid>
+                    <TextBlock Text="Ctrl + 滚轮可快速缩放；小窗口内容可滚动。" Style="{StaticResource MutedText}" FontSize="11" TextWrapping="Wrap" Margin="0,13,0,0" />
+                </StackPanel></Border>
+                <Border Style="{StaticResource Card}" Padding="17" Margin="0,12,0,0"><StackPanel>
+                    <Grid><TextBlock Text="基础字体大小" Style="{StaticResource SectionTitle}" /><TextBlock Text="{Binding FontSize, StringFormat={}{0:0} px}" HorizontalAlignment="Right" Foreground="{StaticResource AccentBrush}" FontFamily="Consolas" /></Grid>
+                    <Slider Minimum="10" Maximum="20" TickFrequency="1" IsSnapToTickEnabled="True" Value="{Binding FontSize, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Margin="0,13,0,8" ToolTip="默认 13；标题与表格文字按相同比例调整" />
+                    <TextBlock Text="Aa　地址 0x00007FF6　数值 100" FontFamily="Consolas, Microsoft YaHei UI" TextWrapping="Wrap" Margin="0,7,0,0" />
+                </StackPanel></Border>
+                <CheckBox Content="记住各工具窗口的尺寸" IsChecked="{Binding RememberWindowSize, Mode=TwoWay}" Margin="2,18,0,0" />
+                <TextBlock Text="设置会自动保存在此电脑，下次启动继续使用。" Style="{StaticResource MutedText}" TextWrapping="Wrap" FontSize="11" Margin="2,8,0,16" />
+            </StackPanel>
+        </ScrollViewer>
+        <WrapPanel Grid.Row="2" Margin="0,14,0,0" HorizontalAlignment="Right"><Button Content="恢复默认" Click="Reset_Click" Margin="0,0,8,0" /><Button Content="完成" Click="Done_Click" Style="{StaticResource PrimaryButton}" IsDefault="True" /></WrapPanel>
+    </Grid>
+</Window>

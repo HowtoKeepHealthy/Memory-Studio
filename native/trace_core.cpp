@@ -4,6 +4,7 @@
 #include <tlhelp32.h>
 #include "trace_core.h"
 #include "memory_core.h"
+#include "trace_registry.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -29,6 +30,10 @@ struct Thread {
     HANDLE handle = nullptr;
     bool suspended = false, trap_owned = false, original_trap = false, stale_trap = false;
 };
+struct Trace;
+std::mutex registry_gate;
+std::vector<Trace*> registry;
+void release_trace(Trace* t);
 struct Trace {
     DWORD pid = 0;
     uint64_t address = 0;
@@ -57,10 +62,24 @@ struct Trace {
     std::array<ms_trace_event, QueueCapacity> queue{};
     size_t head = 0, count = 0;
     ~Trace() {
+        release_trace(this);
         for (auto& [id, thread] : threads) { (void)id; if (thread.handle) CloseHandle(thread.handle); }
         if (process) CloseHandle(process);
     }
 };
+void release_trace(Trace* t) {
+    std::lock_guard<std::mutex> lock(registry_gate);
+    registry.erase(std::remove(registry.begin(), registry.end(), t), registry.end());
+}
+bool reserve_trace(Trace* t) {
+    std::lock_guard<std::mutex> lock(registry_gate);
+    for (const auto* other : registry) if (other->pid == t->pid) return false;
+    registry.push_back(t); return true;
+}
+bool has_trace(DWORD pid) {
+    std::lock_guard<std::mutex> lock(registry_gate);
+    return std::any_of(registry.begin(), registry.end(), [pid](const Trace* t) { return t->pid == pid; });
+}
 
 void plain_error(Trace* t, uint32_t status, const char* message) {
     std::lock_guard<std::mutex> lock(t->gate);
@@ -134,8 +153,10 @@ bool set_context(Trace* t, Thread& thread, CpuContext& context) {
 Thread* add_thread(Trace* t, DWORD id) {
     auto existing = t->threads.find(id);
     if (existing != t->threads.end()) return &existing->second;
-    HANDLE handle = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME | SYNCHRONIZE, FALSE, id);
+    HANDLE handle = OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT | THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, id);
     if (!handle) { os_error(t, "OpenThread"); return nullptr; }
+    const DWORD owner = GetProcessIdOfThread(handle);
+    if (owner != t->pid) { const DWORD error = owner ? ERROR_INVALID_PARAMETER : GetLastError(); CloseHandle(handle); os_error(t, "Verify trace thread owner", error); return nullptr; }
     try { return &t->threads.emplace(id, Thread{handle}).first->second; }
     catch (...) { CloseHandle(handle); throw; }
 }
@@ -401,7 +422,7 @@ void worker_main(Trace* t) {
     try {
         if (!DebugActiveProcess(t->pid)) {
             os_error(t, "DebugActiveProcess (target may already have a debugger or require elevated access)");
-            signal_startup(t, false); complete_stop_attempt(t, true); return;
+            release_trace(t); signal_startup(t, false); complete_stop_attempt(t, true); return;
         }
         t->attached.store(true);
         if (!DebugSetProcessKillOnExit(FALSE)) { os_error(t, "DebugSetProcessKillOnExit(FALSE)"); t->stop.store(true); }
@@ -467,6 +488,7 @@ void worker_main(Trace* t) {
         } catch (...) { plain_error(t, MS_OS, "Debugger event cleanup failed; Stop can retry."); }
     }
     resume_peers(t);
+    release_trace(t);
     complete_stop_attempt(t, true);
 }
 
@@ -495,6 +517,23 @@ bool prepare(Trace* t) {
 }
 } // namespace
 
+std::mutex& ms_trace_registry_mutex() noexcept { return registry_gate; }
+bool ms_trace_overlaps_locked(uint32_t pid, uint64_t start, uint64_t end) noexcept {
+    for (const auto* trace : registry) if (trace->pid == pid)
+        for (const auto& page : trace->pages) if (start < page.address + trace->page_size && end > page.address) return true;
+    return false;
+}
+uint64_t ms_trace_read_end_locked(uint32_t pid, uint64_t start, uint64_t end, uint64_t& skip_end) noexcept {
+    skip_end = start;
+    uint64_t result = end;
+    for (const auto* trace : registry) if (trace->pid == pid) for (const auto& page : trace->pages) {
+        const uint64_t page_end = page.address + trace->page_size;
+        if (start >= page.address && start < page_end) { skip_end = std::min(end, page_end); return start; }
+        if (page.address > start) result = std::min(result, page.address);
+    }
+    return result;
+}
+
 extern "C" {
 MS_TRACE_API void* ms_trace_start(uint32_t pid, uint64_t address, uint32_t size, uint32_t mode) {
     Trace* t = nullptr;
@@ -504,9 +543,17 @@ MS_TRACE_API void* ms_trace_start(uint32_t pid, uint64_t address, uint32_t size,
             address > UINT64_MAX - size || mode > MS_TRACE_WRITE) {
             std::snprintf(startup_error, sizeof(startup_error), "Choose a non-self process and a valid explicit 1..4096-byte address range and trace mode."); return nullptr;
         }
+        if (has_trace(pid)) {
+            std::snprintf(startup_error, sizeof(startup_error), "This target already has an active Memory Studio access trace. Stop it before starting another.");
+            return nullptr;
+        }
         t = new Trace;
         t->pid = pid; t->address = address; t->size = size; t->mode = mode;
         if (!prepare(t)) { std::snprintf(startup_error, sizeof(startup_error), "%s", t->error); delete t; return nullptr; }
+        if (!reserve_trace(t)) {
+            std::snprintf(startup_error, sizeof(startup_error), "This target already has an active Memory Studio access trace. Stop it before starting another.");
+            delete t; return nullptr;
+        }
         t->worker = std::thread(worker_main, t);
         bool ok = false;
         {

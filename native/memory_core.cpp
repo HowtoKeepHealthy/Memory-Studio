@@ -2,23 +2,37 @@
 #define NOMINMAX
 #include <windows.h>
 #include "memory_core.h"
+#include "trace_registry.h"
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <deque>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <new>
+#include <type_traits>
 #include <vector>
 
 static_assert(sizeof(void*) == 8, "MemoryStudio native core requires a 64-bit build.");
 static_assert(sizeof(ms_scan_request) == 56 && sizeof(ms_progress) == 40, "Unexpected public ABI packing.");
+static_assert(sizeof(ms_scan_options) == 56 && sizeof(ms_scan_history_info) == 48, "Unexpected extended ABI packing.");
 
 namespace {
 constexpr uint64_t ResultLimit = 2'000'000;
 constexpr size_t BlockSize = 1024 * 1024;
 constexpr uint32_t PatternLimit = 1024 * 1024;
+constexpr uint32_t HistorySteps = 16;
+constexpr uint64_t HistoryBudget = 64 * 1024 * 1024;
 thread_local char thread_error[512]{};
 
+struct HistoryEntry {
+    std::vector<uint64_t> addresses;
+    std::vector<uint8_t> snapshot;
+    uint32_t type = 0, width = 0;
+    bool has_scan = false;
+    uint64_t bytes() const noexcept { return addresses.capacity() * sizeof(uint64_t) + snapshot.capacity(); }
+};
 struct Session {
     HANDLE process = nullptr;
     HANDLE write_process = nullptr;
@@ -33,6 +47,8 @@ struct Session {
     uint32_t previous_type = 0;
     uint32_t previous_width = 0;
     bool has_scan = false;
+    std::deque<HistoryEntry> history;
+    uint64_t history_bytes = 0, generation = 0;
     char error[512]{};
     ~Session() {
         if (write_process) CloseHandle(write_process);
@@ -45,7 +61,30 @@ struct ScanSpec {
     uint32_t type, mode, width, alignment;
     uint64_t start, end, limit;
     bool writable_only;
-    std::vector<uint8_t> value;
+    bool approximate = false;
+    double absolute_tolerance = 0, relative_tolerance = 0;
+    std::vector<uint8_t> value, upper, mask;
+};
+struct CodeRegion { uint64_t address, size; DWORD protection; bool changed = false; };
+struct CodeRestore {
+    Session* session;
+    std::vector<CodeRegion>& regions;
+    uint64_t address;
+    uint32_t size;
+    bool flush = false;
+    DWORD restore_error = ERROR_SUCCESS, flush_error = ERROR_SUCCESS;
+    void restore() noexcept {
+        for (auto it = regions.rbegin(); it != regions.rend(); ++it) if (it->changed) {
+            DWORD unused = 0;
+            if (VirtualProtectEx(session->write_process, reinterpret_cast<LPVOID>(it->address), it->size, it->protection, &unused)) it->changed = false;
+            else if (!restore_error) restore_error = GetLastError();
+        }
+        if (flush) {
+            if (!FlushInstructionCache(session->process, reinterpret_cast<LPCVOID>(address), size)) flush_error = GetLastError();
+            flush = false;
+        }
+    }
+    ~CodeRestore() noexcept { restore(); }
 };
 
 char* error_buffer(Session* s) noexcept { return s ? s->error : thread_error; }
@@ -98,41 +137,86 @@ template<class T> T load_value(const uint8_t* data) noexcept {
     std::memcpy(&value, data, sizeof(value));
     return value;
 }
-template<class T> bool compare_scalar(const uint8_t* now, const uint8_t* previous, uint32_t mode) noexcept {
-    const T a = load_value<T>(now), b = load_value<T>(previous);
-    if (mode == MS_EXACT) return a == b;
-    if (mode == MS_INCREASED) return a > b;
-    return a < b;
+bool approximately_equal(const ScanSpec& spec, long double a, long double b) noexcept {
+    if (!std::isfinite(a) || !std::isfinite(b)) return false;
+    const long double bound = std::max(static_cast<long double>(spec.absolute_tolerance),
+        static_cast<long double>(spec.relative_tolerance) * std::max(std::fabs(a), std::fabs(b)));
+    return std::fabs(a - b) <= bound;
+}
+template<class T> bool compare_scalar(const ScanSpec& spec, const uint8_t* now, const uint8_t* previous) noexcept {
+    const T a = load_value<T>(now);
+    const bool uses_value = spec.mode == MS_EXACT || spec.mode == MS_GREATER_THAN || spec.mode == MS_LESS_THAN || spec.mode == MS_BETWEEN;
+    const T b = load_value<T>(uses_value ? spec.value.data() : previous);
+    if (spec.mode == MS_EXACT) return spec.approximate ? approximately_equal(spec, a, b) : a == b;
+    if (spec.mode == MS_CHANGED || spec.mode == MS_UNCHANGED) {
+        const bool equal = approximately_equal(spec, a, b);
+        return spec.mode == MS_CHANGED ? (!equal && std::isfinite(a) && std::isfinite(b)) : equal;
+    }
+    if (spec.mode == MS_INCREASED || spec.mode == MS_GREATER_THAN) return a > b;
+    if (spec.mode == MS_DECREASED || spec.mode == MS_LESS_THAN) return a < b;
+    if (spec.mode == MS_BETWEEN) return a >= b && a <= load_value<T>(spec.upper.data());
+    const T delta = load_value<T>(spec.value.data());
+    if constexpr (std::is_floating_point_v<T>) {
+        const long double target = spec.mode == MS_INCREASED_BY ? static_cast<long double>(b) + delta : static_cast<long double>(b) - delta;
+        if (spec.approximate) return approximately_equal(spec, a, target);
+        const T rounded = static_cast<T>(target);
+        return std::isfinite(a) && std::isfinite(b) && std::isfinite(rounded) && a == rounded;
+    } else {
+        if (spec.mode == MS_INCREASED_BY) {
+            if (b > std::numeric_limits<T>::max() - delta) return false;
+            return a == static_cast<T>(b + delta);
+        }
+        if (b < std::numeric_limits<T>::min() + delta) return false;
+        return a == static_cast<T>(b - delta);
+    }
 }
 bool matches(const ScanSpec& spec, const uint8_t* now, const uint8_t* previous) noexcept {
     if (spec.mode == MS_UNKNOWN) return true;
-    if (spec.mode == MS_CHANGED) return std::memcmp(now, previous, spec.width) != 0;
-    if (spec.mode == MS_UNCHANGED) return std::memcmp(now, previous, spec.width) == 0;
-    const uint8_t* comparison = spec.mode == MS_EXACT ? spec.value.data() : previous;
+    if (!spec.approximate && spec.mode == MS_CHANGED) return std::memcmp(now, previous, spec.width) != 0;
+    if (!spec.approximate && spec.mode == MS_UNCHANGED) return std::memcmp(now, previous, spec.width) == 0;
     switch (spec.type) {
-    case MS_U8: return compare_scalar<uint8_t>(now, comparison, spec.mode);
-    case MS_I16: return compare_scalar<int16_t>(now, comparison, spec.mode);
-    case MS_I32: return compare_scalar<int32_t>(now, comparison, spec.mode);
-    case MS_I64: return compare_scalar<int64_t>(now, comparison, spec.mode);
-    case MS_F32: return compare_scalar<float>(now, comparison, spec.mode);
-    case MS_F64: return compare_scalar<double>(now, comparison, spec.mode);
-    default: return std::memcmp(now, comparison, spec.width) == 0;
+    case MS_U8: return compare_scalar<uint8_t>(spec, now, previous);
+    case MS_I16: return compare_scalar<int16_t>(spec, now, previous);
+    case MS_I32: return compare_scalar<int32_t>(spec, now, previous);
+    case MS_I64: return compare_scalar<int64_t>(spec, now, previous);
+    case MS_F32: return compare_scalar<float>(spec, now, previous);
+    case MS_F64: return compare_scalar<double>(spec, now, previous);
+    default:
+        if (!spec.mask.empty()) {
+            for (uint32_t index = 0; index < spec.width; ++index)
+                if ((now[index] & spec.mask[index]) != (spec.value[index] & spec.mask[index])) return false;
+            return true;
+        }
+        return std::memcmp(now, spec.value.data(), spec.width) == 0;
     }
 }
 
-int32_t validate(Session* s, const ms_scan_request& request, bool next, ScanSpec& spec) {
-    if (request.type > MS_BYTES || request.mode > MS_DECREASED || request.reserved != 0)
+template<class T> bool valid_bounds(const ScanSpec& spec) noexcept {
+    const T low = load_value<T>(spec.value.data());
+    if (spec.mode == MS_BETWEEN) {
+        const T high = load_value<T>(spec.upper.data());
+        if constexpr (std::is_floating_point_v<T>) return std::isfinite(low) && std::isfinite(high) && low <= high;
+        return low <= high;
+    }
+    if (spec.mode == MS_INCREASED_BY || spec.mode == MS_DECREASED_BY) {
+        if constexpr (std::is_floating_point_v<T>) return std::isfinite(low) && low >= 0;
+        return low >= 0;
+    }
+    return true;
+}
+int32_t validate(Session* s, const ms_scan_request& request, bool next, const ms_scan_options* options, ScanSpec& spec) {
+    if (request.type > MS_BYTES || request.mode > MS_DECREASED_BY || request.reserved != 0)
         return fail(s, MS_INVALID, "Invalid scan type, mode, or reserved field.");
     if (next && !s->has_scan) return fail(s, MS_INVALID, "A successful initial scan is required before filtering.");
-    if (!next && request.mode != MS_EXACT && request.mode != MS_UNKNOWN)
-        return fail(s, MS_INVALID, "An initial scan supports exact value or unknown initial value.");
+    if (!next && request.mode != MS_EXACT && request.mode != MS_UNKNOWN && request.mode != MS_GREATER_THAN && request.mode != MS_LESS_THAN && request.mode != MS_BETWEEN)
+        return fail(s, MS_INVALID, "An initial scan supports exact, unknown, greater/less than, or inclusive range.");
     if (next && request.mode == MS_UNKNOWN)
         return fail(s, MS_INVALID, "Unknown initial value cannot be used for a subsequent scan.");
     spec.type = request.type;
     spec.mode = request.mode;
     spec.width = scalar_width(request.type);
     if (!spec.width) {
-        if (request.mode == MS_UNKNOWN || request.mode == MS_INCREASED || request.mode == MS_DECREASED)
+        if (request.mode != MS_EXACT && request.mode != MS_CHANGED && request.mode != MS_UNCHANGED)
             return fail(s, MS_INVALID, "This scan mode is available only for scalar numeric values.");
         spec.width = request.mode == MS_EXACT ? request.value_size : s->previous_width;
         if (spec.width == 0 || spec.width > PatternLimit || (request.type == MS_UTF16 && (spec.width % 2 != 0)))
@@ -140,10 +224,46 @@ int32_t validate(Session* s, const ms_scan_request& request, bool next, ScanSpec
     }
     if (next && (request.type != s->previous_type || spec.width != s->previous_width))
         return fail(s, MS_INVALID, "Subsequent scans must retain the previous value type and byte width.");
-    if (request.mode == MS_EXACT) {
+    const bool value_needed = request.mode == MS_EXACT || request.mode >= MS_GREATER_THAN;
+    if (value_needed) {
         if (!request.value || request.value_size != spec.width)
             return fail(s, MS_INVALID, "The exact value buffer must match the selected value width.");
         spec.value.assign(request.value, request.value + spec.width);
+    }
+    if (options) {
+        if (options->struct_size != sizeof(ms_scan_options) || options->reserved || options->reserved2 || (options->flags & ~MS_APPROXIMATE))
+            return fail(s, MS_INVALID, "Invalid extended scan options or structure size.");
+        if (!std::isfinite(options->absolute_tolerance) || !std::isfinite(options->relative_tolerance) || options->absolute_tolerance < 0 || options->relative_tolerance < 0)
+            return fail(s, MS_INVALID, "Float tolerances must be finite and nonnegative.");
+        spec.approximate = (options->flags & MS_APPROXIMATE) != 0;
+        if (spec.approximate && request.type != MS_F32 && request.type != MS_F64)
+            return fail(s, MS_INVALID, "Approximate comparison is available only for float32 and float64.");
+        spec.absolute_tolerance = options->absolute_tolerance;
+        spec.relative_tolerance = options->relative_tolerance;
+        if (request.mode == MS_BETWEEN) {
+            if (!options->upper_value || options->upper_value_size != spec.width)
+                return fail(s, MS_INVALID, "The inclusive range requires a same-width upper endpoint.");
+            spec.upper.assign(options->upper_value, options->upper_value + spec.width);
+        } else if (options->upper_value || options->upper_value_size)
+            return fail(s, MS_INVALID, "An upper endpoint is used only for inclusive range scans.");
+        if (options->pattern_mask || options->pattern_mask_size) {
+            if (request.type != MS_BYTES || request.mode != MS_EXACT || !options->pattern_mask || options->pattern_mask_size != spec.width)
+                return fail(s, MS_INVALID, "AOB bit masks require an exact byte scan and the same pattern length.");
+            spec.mask.assign(options->pattern_mask, options->pattern_mask + spec.width);
+        }
+    }
+    if (request.mode == MS_BETWEEN && spec.upper.empty()) return fail(s, MS_INVALID, "An inclusive range requires extended scan options with an upper endpoint.");
+    if (request.mode >= MS_BETWEEN) {
+        bool valid = false;
+        switch (request.type) {
+        case MS_U8: valid = valid_bounds<uint8_t>(spec); break;
+        case MS_I16: valid = valid_bounds<int16_t>(spec); break;
+        case MS_I32: valid = valid_bounds<int32_t>(spec); break;
+        case MS_I64: valid = valid_bounds<int64_t>(spec); break;
+        case MS_F32: valid = valid_bounds<float>(spec); break;
+        case MS_F64: valid = valid_bounds<double>(spec); break;
+        }
+        if (!valid) return fail(s, MS_INVALID, "Range endpoints must be ordered finite values and specified deltas must be finite and nonnegative.");
     }
     spec.alignment = request.alignment;
     const uint32_t natural_alignment = scalar_width(request.type) ? spec.width : (request.type == MS_UTF16 ? 2 : 1);
@@ -249,13 +369,22 @@ int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>
         for (uint64_t address = region.start; address < region.end;) {
             if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
             if (ensure_alive(s) != MS_OK) return MS_OS;
-            const size_t size = static_cast<size_t>(std::min<uint64_t>(BlockSize, region.end - address));
+            std::unique_lock<std::mutex> trace_lock(ms_trace_registry_mutex());
+            uint64_t skip_end = address;
+            const uint64_t block_limit = std::min(region.end, address + std::min<uint64_t>(BlockSize, region.end - address));
+            const uint64_t readable_end = ms_trace_read_end_locked(s->pid, address, block_limit, skip_end);
+            if (readable_end == address) {
+                s->scanned.fetch_add(skip_end - address); address = skip_end; tail.clear(); previous_end = 0; continue;
+            }
+            const size_t size = static_cast<size_t>(readable_end - address);
             SIZE_T received = 0;
             if (ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), read_buffer.data(), size, &received) && received == size) {
+                trace_lock.unlock();
                 const auto result = consume(address, read_buffer.data(), size);
                 if (result != MS_OK) return result;
                 s->scanned.fetch_add(size);
             } else {
+                trace_lock.unlock();
                 // A protection change or inaccessible page must not discard the readable remainder of a large block.
                 const uint64_t block_end = address + size;
                 for (uint64_t page = address; page < block_end;) {
@@ -263,7 +392,12 @@ int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>
                     const uint64_t page_end = std::min(block_end, ((page / s->page_size) + 1) * s->page_size);
                     const size_t page_bytes = static_cast<size_t>(page_end - page);
                     received = 0;
+                    std::unique_lock<std::mutex> page_trace_lock(ms_trace_registry_mutex());
+                    if (ms_trace_overlaps_locked(s->pid, page, page_end)) {
+                        tail.clear(); previous_end = 0; s->scanned.fetch_add(page_bytes); page = page_end; continue;
+                    }
                     const BOOL read_ok = ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(page)), read_buffer.data(), page_bytes, &received);
+                    page_trace_lock.unlock();
                     if (received > 0 && received <= page_bytes) {
                         const auto result = consume(page, read_buffer.data(), static_cast<size_t>(received));
                         if (result != MS_OK) return result;
@@ -297,16 +431,20 @@ int32_t subsequent_scan(Session* s, const ScanSpec& spec, const std::vector<Regi
         if (region_index == regions.size()) continue;
         const auto& region = regions[region_index];
         if (address < region.start || region.end - address < spec.width || address % spec.alignment != 0) continue;
+        std::unique_lock<std::mutex> trace_lock(ms_trace_registry_mutex());
+        if (ms_trace_overlaps_locked(s->pid, address, address + spec.width)) continue;
         if (address < cache_start || address >= cache_covered_end) {
             cache_start = address;
-            const size_t size = static_cast<size_t>(std::min<uint64_t>(BlockSize, region.end - address));
+            uint64_t skip_end = address;
+            const uint64_t read_end = ms_trace_read_end_locked(s->pid, address, address + std::min<uint64_t>(BlockSize, region.end - address), skip_end);
+            const size_t size = static_cast<size_t>(read_end - address);
             SIZE_T received = 0;
             const BOOL read_ok = ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), cache.data(), size, &received);
             if (read_ok && received == size) {
                 cache_end = address + size;
                 cache_covered_end = cache_end;
             } else {
-                const uint64_t page_end = std::min(region.end, ((address / s->page_size) + 1) * s->page_size);
+                const uint64_t page_end = std::min(read_end, ((address / s->page_size) + 1) * s->page_size);
                 received = 0;
                 ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), cache.data(), static_cast<SIZE_T>(page_end - address), &received);
                 cache_end = address + std::min<uint64_t>(received, page_end - address);
@@ -323,6 +461,7 @@ int32_t subsequent_scan(Session* s, const ScanSpec& spec, const std::vector<Regi
                 current = single.data();
         }
         if (!current) continue;
+        trace_lock.unlock();
         const uint8_t* previous = s->snapshot.data() + index * static_cast<size_t>(spec.width);
         if (matches(spec, current, previous)) {
             const auto result = pending.add(s, spec, address, current);
@@ -360,7 +499,7 @@ MS_API void ms_close(void* opaque) {
     try { delete static_cast<Session*>(opaque); }
     catch (...) { fail(nullptr, MS_OS, "Unexpected native error while closing the process."); }
 }
-MS_API int32_t ms_scan(void* opaque, const ms_scan_request* request, uint32_t next_scan) {
+MS_API int32_t ms_scan_ex(void* opaque, const ms_scan_request* request, uint32_t next_scan, const ms_scan_options* options) {
     auto* s = static_cast<Session*>(opaque);
     try {
         if (!s || !request) return fail(s, MS_INVALID, "A process session and scan request are required.");
@@ -375,7 +514,7 @@ MS_API int32_t ms_scan(void* opaque, const ms_scan_request* request, uint32_t ne
         s->progress_results.store(0);
         RunningGuard guard{s};
         ScanSpec spec{};
-        int32_t status = validate(s, *request, next_scan != 0, spec);
+        int32_t status = validate(s, *request, next_scan != 0, options, spec);
         if (status != MS_OK) return status;
         if ((status = ensure_alive(s)) != MS_OK) return status;
         std::vector<Region> regions;
@@ -384,16 +523,57 @@ MS_API int32_t ms_scan(void* opaque, const ms_scan_request* request, uint32_t ne
         status = next_scan ? subsequent_scan(s, spec, regions, pending) : initial_scan(s, spec, regions, pending);
         if (status != MS_OK) return status;
         if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
+        const uint64_t previous_bytes = s->addresses.capacity() * sizeof(uint64_t) + s->snapshot.capacity();
+        if (previous_bytes <= HistoryBudget) {
+            // Allocate the history node before mutating the live scan. Vector swaps
+            // and subsequent eviction cannot throw: cancellation/failure stays transactional.
+            s->history.emplace_back();
+            auto& entry = s->history.back();
+            entry.type = s->previous_type; entry.width = s->previous_width; entry.has_scan = s->has_scan;
+            entry.addresses.swap(s->addresses); entry.snapshot.swap(s->snapshot);
+            s->history_bytes += entry.bytes();
+            while (s->history.size() > HistorySteps || s->history_bytes > HistoryBudget) {
+                s->history_bytes -= s->history.front().bytes(); s->history.pop_front();
+            }
+        } else { s->history.clear(); s->history_bytes = 0; }
         s->addresses.swap(pending.addresses);
         s->snapshot.swap(pending.snapshot);
         s->previous_type = spec.type;
         s->previous_width = spec.width;
         s->has_scan = true;
+        ++s->generation;
         s->progress_results.store(s->addresses.size());
         clear_error(s);
         return MS_OK;
     } catch (const std::bad_alloc&) { return fail(s, MS_OS, "Not enough memory for the scan. Previous results have been preserved."); }
     catch (...) { return fail(s, MS_OS, "Unexpected native scan error. Previous results have been preserved."); }
+}
+MS_API int32_t ms_scan(void* opaque, const ms_scan_request* request, uint32_t next_scan) {
+    return ms_scan_ex(opaque, request, next_scan, nullptr);
+}
+MS_API int32_t ms_undo_scan(void* opaque) {
+    auto* s = static_cast<Session*>(opaque);
+    try {
+        if (!s) return fail(s, MS_INVALID, "A process session is required.");
+        if (s->state.load() & 1) return fail(s, MS_BUSY, "Cannot undo while a scan is running.");
+        if (s->history.empty()) return fail(s, MS_INVALID, "No retained scan history is available to undo.");
+        auto& entry = s->history.back();
+        s->history_bytes -= entry.bytes();
+        s->addresses.swap(entry.addresses); s->snapshot.swap(entry.snapshot);
+        s->previous_type = entry.type; s->previous_width = entry.width; s->has_scan = entry.has_scan;
+        s->history.pop_back(); ++s->generation;
+        s->progress_results.store(s->addresses.size());
+        clear_error(s); return MS_OK;
+    } catch (...) { return fail(s, MS_OS, "Unexpected error while restoring scan history."); }
+}
+MS_API void ms_get_scan_history(void* opaque, ms_scan_history_info* info) {
+    try {
+        if (!info) return;
+        *info = {}; auto* s = static_cast<Session*>(opaque); if (!s) return;
+        info->undo_count = static_cast<uint32_t>(s->history.size()); info->max_steps = HistorySteps;
+        info->type = s->previous_type; info->byte_width = s->previous_width; info->has_scan = s->has_scan;
+        info->used_bytes = s->history_bytes; info->budget_bytes = HistoryBudget; info->generation = s->generation;
+    } catch (...) { if (info) *info = {}; }
 }
 MS_API void ms_cancel(void* opaque) {
     auto* s = static_cast<Session*>(opaque);
@@ -439,6 +619,17 @@ MS_API int32_t ms_read(void* opaque, uint64_t address, uint8_t* buffer, uint32_t
         if (!s || !buffer || !size || address > std::numeric_limits<uint64_t>::max() - size)
             return fail(s, MS_INVALID, "A session, nonempty buffer, and valid address are required.");
         if (ensure_alive(s) != MS_OK) return MS_OS;
+        std::lock_guard<std::mutex> trace_lock(ms_trace_registry_mutex());
+        const uint64_t end = address + size;
+        if (ms_trace_overlaps_locked(s->pid, address, end)) return fail(s, MS_BUSY, "This page is reserved by an active access trace; reading it would disturb its guard.");
+        for (uint64_t cursor = address; cursor < end;) {
+            MEMORY_BASIC_INFORMATION info{};
+            if (!VirtualQueryEx(s->process, reinterpret_cast<LPCVOID>(cursor), &info, sizeof(info))) return os_fail(s, "VirtualQueryEx before reading");
+            if (info.State != MEM_COMMIT || !readable(info.Protect)) return fail(s, MS_ACCESS, "The requested read includes inaccessible or guard-protected memory.");
+            const uint64_t base = reinterpret_cast<uintptr_t>(info.BaseAddress);
+            if (!info.RegionSize || base > UINT64_MAX - info.RegionSize || base + info.RegionSize <= cursor) return fail(s, MS_OS, "Invalid region before reading.");
+            cursor = std::min(end, base + info.RegionSize);
+        }
         SIZE_T received = 0;
         const BOOL read_ok = ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(address)), buffer, size, &received);
         const DWORD read_error = read_ok ? ERROR_SUCCESS : GetLastError();
@@ -454,7 +645,9 @@ MS_API int32_t ms_write(void* opaque, uint64_t address, const uint8_t* buffer, u
         if (!s || !buffer || !size || address > std::numeric_limits<uint64_t>::max() - size)
             return fail(s, MS_INVALID, "A session, nonempty buffer, and valid address are required.");
         if (ensure_alive(s) != MS_OK) return MS_OS;
+        std::lock_guard<std::mutex> trace_lock(ms_trace_registry_mutex());
         const uint64_t end = address + size;
+        if (ms_trace_overlaps_locked(s->pid, address, end)) return fail(s, MS_BUSY, "This page is reserved by an active access trace; writing it would disturb the captured instruction.");
         for (uint64_t cursor = address; cursor < end;) {
             MEMORY_BASIC_INFORMATION info{};
             if (!VirtualQueryEx(s->process, reinterpret_cast<LPCVOID>(static_cast<uintptr_t>(cursor)), &info, sizeof(info)))
@@ -478,6 +671,56 @@ MS_API int32_t ms_write(void* opaque, uint64_t address, const uint8_t* buffer, u
         clear_error(s);
         return MS_OK;
     } catch (...) { return fail(s, MS_OS, "Unexpected native write error."); }
+}
+MS_API int32_t ms_write_code(void* opaque, uint64_t address, const uint8_t* buffer, uint32_t size) {
+    auto* s = static_cast<Session*>(opaque);
+    try {
+        if (!s || !buffer || !size || size > PatternLimit || address > UINT64_MAX - size)
+            return fail(s, MS_INVALID, "An explicit code patch requires a valid address and 1..1,048,576 bytes.");
+        if (ensure_alive(s) != MS_OK) return MS_OS;
+        std::lock_guard<std::mutex> trace_lock(ms_trace_registry_mutex());
+        std::vector<CodeRegion> regions;
+        const uint64_t end = address + size;
+        if (ms_trace_overlaps_locked(s->pid, address, end)) return fail(s, MS_BUSY, "Cannot patch a page reserved by an active access trace.");
+        for (uint64_t cursor = address; cursor < end;) {
+            MEMORY_BASIC_INFORMATION info{};
+            if (!VirtualQueryEx(s->process, reinterpret_cast<LPCVOID>(cursor), &info, sizeof(info))) return os_fail(s, "VirtualQueryEx before code patch");
+            if (info.State != MEM_COMMIT || (info.Protect & (PAGE_GUARD | PAGE_NOACCESS)) || !(info.Protect & 0xff))
+                return fail(s, MS_ACCESS, "Code patches cannot include uncommitted, guard, or inaccessible pages.");
+            const uint64_t base = reinterpret_cast<uintptr_t>(info.BaseAddress);
+            if (!info.RegionSize || base > UINT64_MAX - info.RegionSize || base + info.RegionSize <= cursor)
+                return fail(s, MS_OS, "Invalid memory region before code patch.");
+            const uint64_t region_end = std::min(end, base + info.RegionSize);
+            regions.push_back({cursor, region_end - cursor, info.Protect}); cursor = region_end;
+        }
+        if (!s->write_process) {
+            s->write_process = OpenProcess(PROCESS_VM_WRITE | PROCESS_VM_OPERATION, FALSE, s->pid);
+            if (!s->write_process) return os_fail(s, "OpenProcess for code patch");
+        }
+        CodeRestore restore{s, regions, address, size};
+        for (auto& region : regions) {
+            const DWORD base = region.protection & 0xff;
+            const bool executable = base == PAGE_EXECUTE || base == PAGE_EXECUTE_READ || base == PAGE_EXECUTE_READWRITE || base == PAGE_EXECUTE_WRITECOPY;
+            DWORD previous = 0;
+            if (!VirtualProtectEx(s->write_process, reinterpret_cast<LPVOID>(region.address), region.size,
+                                  executable ? PAGE_EXECUTE_READWRITE : PAGE_READWRITE, &previous)) {
+                const DWORD error = GetLastError(); restore.restore();
+                if (restore.restore_error) return os_fail(s, "Restore page protection after rejected code patch", restore.restore_error);
+                return os_fail(s, "Make code patch region writable", error);
+            }
+            region.protection = previous; region.changed = true;
+        }
+        SIZE_T written = 0;
+        restore.flush = true; // Flush even a partially failed write before reporting its failure.
+        const BOOL ok = WriteProcessMemory(s->write_process, reinterpret_cast<LPVOID>(address), buffer, size, &written);
+        const DWORD error = ok ? ERROR_PARTIAL_COPY : GetLastError();
+        restore.restore();
+        if (restore.restore_error) return os_fail(s, "Restore original code page protection", restore.restore_error);
+        if (restore.flush_error) return os_fail(s, "FlushInstructionCache after code patch", restore.flush_error);
+        if (!ok || written != size) return os_fail(s, "WriteProcessMemory code patch", error);
+        clear_error(s); return MS_OK;
+    } catch (const std::bad_alloc&) { return fail(s, MS_OS, "Not enough memory for the code patch protection list."); }
+    catch (...) { return fail(s, MS_OS, "Unexpected native code patch error."); }
 }
 MS_API uint32_t ms_error(void* opaque, char* buffer, uint32_t capacity) {
     try {

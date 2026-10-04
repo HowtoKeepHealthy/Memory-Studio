@@ -14,11 +14,18 @@ public partial class App : Application
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
+        if (ElevationService.TryRelaunch(e.Args)) { Shutdown(); return; }
         if (e.Args.Length > 0 && e.Args[0] == "--self-test")
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             string report = e.Args.Length > 1 ? e.Args[1] : Path.Combine(AppContext.BaseDirectory, "self-test.txt");
             int code = await SmokeTests.RunAsync(report); Shutdown(code); return;
+        }
+        if (!e.Args.Contains("--screenshot"))
+        {
+            AppearanceSettings.Initialize();
+            EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
+                new RoutedEventHandler((sender, _) => { if (sender is Window appearanceWindow) AppearanceSettings.Apply(appearanceWindow); }));
         }
         DispatcherUnhandledException += (_, args) =>
         {

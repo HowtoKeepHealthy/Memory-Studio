@@ -5,14 +5,15 @@ using System.Windows.Controls;
 namespace MemoryStudio;
 
 public enum RecordEditKind { Value, Address, Type, Description }
-public sealed record RecordEditRequest(RecordEditKind Kind, string InitialText, int Type, int ByteSize, string AddressText);
-public sealed record RecordEditResult(string Text, int Type, int ByteSize);
+public sealed record RecordEditRequest(RecordEditKind Kind, string InitialText, int Type, int ByteSize, string AddressText, bool Hexadecimal = false);
+public sealed record RecordEditResult(string Text, int Type, int ByteSize, bool Hexadecimal = false);
 
 public partial class RecordEditorWindow : Window
 {
     private readonly RecordEditRequest _request;
     private bool _initializing = true;
     private RecordEditResult? _result;
+    private bool _hexadecimal;
 
     public RecordEditorWindow(RecordEditRequest request)
     {
@@ -20,6 +21,7 @@ public partial class RecordEditorWindow : Window
         if (!Enum.IsDefined(request.Kind) || request.Type is < 0 or > 8)
             throw new ArgumentException("记录的编辑项目或数据类型无效。", nameof(request));
         _request = request;
+        _hexadecimal = request.Hexadecimal;
         InitializeComponent();
         DataContext = null;
         SourceInitialized += (_, _) => WindowAppearance.ApplyDarkTitleBar(this);
@@ -34,6 +36,8 @@ public partial class RecordEditorWindow : Window
         HeadingLabel.Text = subject;
         ContextLabel.Text = $"{request.AddressText}  ·  {ValueCodec.TypeLabel(request.Type)}  ·  {request.ByteSize:N0} 字节";
         ContentInput.Text = request.InitialText ?? "";
+        RadixInput.IsChecked = _hexadecimal;
+        RadixInput.Visibility = request.Kind == RecordEditKind.Value && request.Type <= 5 ? Visibility.Visible : Visibility.Collapsed;
         ByteSizeInput.Text = request.ByteSize.ToString(CultureInfo.InvariantCulture);
         TypeInput.ItemsSource = ValueCodec.Types;
         TypeInput.SelectedItem = ValueCodec.Types.First(option => option.Value == request.Type);
@@ -84,12 +88,12 @@ public partial class RecordEditorWindow : Window
             {
                 if (request.ByteSize is < 1 or > 4096) throw new ArgumentException("记录的数据长度必须是 1–4096 字节。");
                 byte[] bytes;
-                try { bytes = ValueCodec.Parse(request.Type, text); }
+                try { bytes = ValueCodec.Parse(request.Type, text, request.Hexadecimal); }
                 catch (FormatException) { throw new ArgumentException(request.Type == 8 ? "字节序列格式有误：每个字节使用两位十六进制数，例如 DE AD BE EF。" : "输入格式有误：整数和浮点数使用十进制。"); }
                 catch (OverflowException) { throw new ArgumentException("数值超出了此数据类型的有效范围。"); }
                 if (bytes.Length != request.ByteSize)
                     throw new ArgumentException($"输入编码后是 {bytes.Length:N0} 字节，需要保持此记录的 {request.ByteSize:N0} 字节长度。");
-                return new(text, request.Type, request.ByteSize);
+                return new(text, request.Type, request.ByteSize, request.Hexadecimal);
             }
             case RecordEditKind.Address:
             {
@@ -166,9 +170,21 @@ public partial class RecordEditorWindow : Window
             int size = _request.ByteSize;
             if (_request.Kind == RecordEditKind.Type && !int.TryParse(ByteSizeInput.Text, NumberStyles.None, CultureInfo.InvariantCulture, out size))
                 throw new ArgumentException("读取长度必须是 1–4096 字节的整数。");
-            _result = Validate(_request, ContentInput.Text, type, size);
+            _result = Validate(_request with { Hexadecimal = _hexadecimal }, ContentInput.Text, type, size);
             DialogResult = true;
         }
         catch (ArgumentException ex) { ErrorLabel.Text = ex.Message; }
+    }
+    private void RadixInput_Click(object sender, RoutedEventArgs e)
+    {
+        bool requested = RadixInput.IsChecked == true;
+        try
+        {
+            ContentInput.Text = ValueCodec.Format(_request.Type, ValueCodec.Parse(_request.Type, ContentInput.Text, _hexadecimal), requested);
+            _hexadecimal = requested;
+            HintLabel.Text = requested && _request.Type is 4 or 5 ? "浮点十六进制显示 IEEE 754 位模式；切换回十进制会恢复数值。" : ValueHint(_request.Type, _request.ByteSize);
+        }
+        catch (Exception ex) when (ex is FormatException or ArgumentException or OverflowException)
+        { RadixInput.IsChecked = _hexadecimal; ErrorLabel.Text = ex.Message; }
     }
 }

@@ -8,9 +8,9 @@ public static class BundledAssets
 {
     public static string Resolve(string name)
     {
-        if (name != "DemoTarget.exe") throw new ArgumentException("Unknown bundled asset.", nameof(name));
+        if (name is not ("DemoTarget.exe" or "nasm.exe")) throw new ArgumentException("Unknown bundled asset.", nameof(name));
         using var resource = Assembly.GetExecutingAssembly().GetManifestResourceStream("MemoryStudio.Assets." + name);
-        if (resource == null) throw new FileNotFoundException("演示程序未打包，请重新运行 build.cmd 或 package.cmd。");
+        if (resource == null) throw new FileNotFoundException($"工具 {name} 未打包，请重新运行 build.cmd 或 package.cmd。");
         using var buffer = new MemoryStream();
         resource.CopyTo(buffer);
         byte[] bytes = buffer.ToArray();

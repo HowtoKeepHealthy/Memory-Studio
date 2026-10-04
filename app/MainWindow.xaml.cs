@@ -7,6 +7,8 @@ using System.Runtime.InteropServices;
 using System.Windows.Threading;
 using System.Windows.Media.Imaging;
 using System.Windows.Media;
+using System.Windows.Data;
+using System.ComponentModel;
 
 namespace MemoryStudio;
 
@@ -18,13 +20,167 @@ public partial class MainWindow : Window
     private Cursor? _previousCursor;
     private bool _picking;
     private ContextMenu? _recordContextMenu;
+    private bool? _compactLayout;
+    private bool _settingsExpanded = true;
+    private bool _layoutUpdating;
+    private bool _visibleResultsQueued;
+    private bool _closingTraces;
+    private bool _allowClose;
 
     public MainWindow()
     {
         InitializeComponent();
         SourceInitialized += (_, _) => WindowAppearance.ApplyDarkTitleBar(this);
         _pickerTimer.Tick += (_, _) => UpdatePickerTarget();
-        Closed += (_, _) => { EndPickerCapture(); if (_recordContextMenu is not null) _recordContextMenu.IsOpen = false; };
+        Loaded += (_, _) => { UpdateResponsiveLayout(); QueueVisibleResults(); };
+        Closing += MainWindow_Closing;
+        AppearanceSettings.Changed += AppearanceSettings_Changed;
+        Closed += (_, _) => { EndPickerCapture(); AppearanceSettings.Changed -= AppearanceSettings_Changed; if (_recordContextMenu is not null) _recordContextMenu.IsOpen = false; };
+    }
+
+    private async void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        if (_allowClose || DataContext is not MainViewModel vm) return;
+        e.Cancel = true;
+        if (_closingTraces) return;
+        _closingTraces = true;
+        try
+        {
+            if (await vm.CloseTraceWindowsAsync())
+            {
+                _allowClose = true;
+                // A trace-free close may complete synchronously, while WPF is still inside its Closing event.
+                _ = Dispatcher.BeginInvoke(Close, DispatcherPriority.Normal);
+            }
+        }
+        catch (Exception ex) { vm.SetStatus($"退出前停止访问追踪未完成：{ex.Message}"); }
+        finally { _closingTraces = false; }
+    }
+
+    private void AppearanceSettings_Changed(object? sender, EventArgs e) => Dispatcher.BeginInvoke(UpdateResponsiveLayout, DispatcherPriority.Loaded);
+    private void MainShell_SizeChanged(object sender, SizeChangedEventArgs e) => UpdateResponsiveLayout();
+
+    private void UpdateResponsiveLayout()
+    {
+        if (_layoutUpdating || MainShell is null || MainShell.ActualWidth <= 0) return;
+        _layoutUpdating = true;
+        try
+        {
+            double width = MainShell.ActualWidth;
+            bool compact = width < 1100;
+            if (_compactLayout != compact) { _compactLayout = compact; _settingsExpanded = !compact; }
+            bool iconNavigation = width < 600 || MainShell.ActualHeight < 410;
+            RailColumn.Width = new GridLength(compact ? iconNavigation ? 52 : AppearanceSettings.Current.FontSize > 16 ? 76 : 64 : 82);
+            NavScanLabel.Visibility = NavWatchLabel.Visibility = NavAboutLabel.Visibility = iconNavigation ? Visibility.Collapsed : Visibility.Visible;
+            MainHeaderRow.Height = GridLength.Auto;
+            MainHeaderRow.MinHeight = compact ? 100 : 86;
+            RailBrandRow.Height = new GridLength(Math.Max(MainHeaderRow.MinHeight, MainHeaderRow.ActualHeight));
+            HeaderLayout.Margin = new Thickness(compact ? 12 : 20, compact ? 8 : 12, compact ? 12 : 20, compact ? 8 : 12);
+            HeaderFirstRow.Height = compact ? GridLength.Auto : new GridLength(1, GridUnitType.Star);
+            HeaderSecondRow.Height = compact ? GridLength.Auto : new GridLength(0);
+            Grid.SetColumn(HeaderActions, compact ? 0 : 1);
+            Grid.SetRow(HeaderActions, compact ? 1 : 0);
+            Grid.SetColumnSpan(HeaderActions, compact ? 2 : 1);
+            HeaderActions.Margin = new Thickness(0, compact ? 8 : 0, 0, 0);
+            Grid.SetColumnSpan(BrandHeader, compact ? 2 : 1);
+            BrandSubtitle.Visibility = compact ? Visibility.Collapsed : Visibility.Visible;
+            ProcessCombo.Width = compact ? width < 600 ? 125 : 185 : 225;
+            ProcessBadgeText.MaxWidth = compact ? width < 600 ? 45 : 130 : 280;
+            PracticeButton.Content = width < 600 ? "练习 ↗" : "启动练习 ↗";
+            WorkspaceTabs.Margin = compact ? new Thickness(12, 12, 12, 8) : new Thickness(16, 14, 16, 10);
+            ScanSettingsColumn.Width = new GridLength(compact ? 0 : 286);
+            ScanGapColumn.Width = new GridLength(compact ? 0 : 14);
+            Grid.SetColumn(ScanSettingsCard, compact ? 0 : 2);
+            Grid.SetColumnSpan(ScanSettingsCard, compact ? 3 : 1);
+            Grid.SetRow(ResultsCard, compact ? 2 : 0);
+            Grid.SetColumnSpan(ResultsCard, compact ? 3 : 1);
+            ScanLayoutGapRow.Height = new GridLength(compact ? 12 : 0);
+            ScanLayoutLastRow.Height = compact ? GridLength.Auto : new GridLength(0);
+            double bodyHeight = Math.Max(150, MainShell.ActualHeight - MainHeaderRow.ActualHeight - 58);
+            CompactWatchCard.Height = Math.Max(200, 200 * AppearanceSettings.Current.FontSize / 13);
+            ResultsCard.Height = compact ? Math.Clamp(bodyHeight * 0.66, 245, 350) : Math.Max(280, bodyHeight - CompactWatchCard.Height - 60);
+            ScanSettingsFields.Visibility = _settingsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            ScanSettingsCard.Height = _settingsExpanded ? compact ? 360 : ResultsCard.Height : double.NaN;
+            ScanSettingsToggle.Content = _settingsExpanded ? "扫描设置  ▴" : "扫描设置  ▾";
+            FullWatchCard.Height = Math.Max(220, bodyHeight - 165);
+            QueueVisibleResults();
+        }
+        finally { _layoutUpdating = false; }
+    }
+
+    private void ScanSettingsToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _settingsExpanded = !_settingsExpanded;
+        UpdateResponsiveLayout();
+    }
+
+    private void ResultGrid_Loaded(object sender, RoutedEventArgs e) => QueueVisibleResults();
+    private void ResultGrid_ScrollChanged(object sender, ScrollChangedEventArgs e) => QueueVisibleResults();
+
+    private void QueueVisibleResults()
+    {
+        if (_visibleResultsQueued || ResultGrid is null) return;
+        _visibleResultsQueued = true;
+        Dispatcher.BeginInvoke(() =>
+        {
+            _visibleResultsQueued = false;
+            if (DataContext is not MainViewModel vm) return;
+            var bounds = new Rect(0, 0, ResultGrid.ActualWidth, ResultGrid.ActualHeight);
+            var rows = new List<ResultRow>();
+            foreach (var row in VisualDescendants<DataGridRow>(ResultGrid))
+            {
+                if (!row.IsVisible || row.ActualHeight <= 0 || row.Item is not ResultRow record) continue;
+                try
+                {
+                    var rectangle = row.TransformToAncestor(ResultGrid).TransformBounds(new Rect(0, 0, row.ActualWidth, row.ActualHeight));
+                    var pageRectangle = row.TransformToAncestor(ScanPageScroll).TransformBounds(new Rect(0, 0, row.ActualWidth, row.ActualHeight));
+                    if (rectangle.IntersectsWith(bounds) && pageRectangle.IntersectsWith(new Rect(0, 0, ScanPageScroll.ActualWidth, ScanPageScroll.ActualHeight))) rows.Add(record);
+                }
+                catch (InvalidOperationException) { }
+            }
+            vm.SetVisibleResults(rows);
+        }, DispatcherPriority.Background);
+    }
+
+    private static IEnumerable<T> VisualDescendants<T>(DependencyObject root) where T : DependencyObject
+    {
+        int count = VisualTreeHelper.GetChildrenCount(root);
+        for (int i = 0; i < count; i++)
+        {
+            var child = VisualTreeHelper.GetChild(root, i);
+            if (child is T match) yield return match;
+            foreach (var descendant in VisualDescendants<T>(child)) yield return descendant;
+        }
+    }
+
+    private void ToolsButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button || DataContext is not MainViewModel vm) return;
+        var menu = new ContextMenu { Style = (Style)FindResource("RecordContextMenu"), PlacementTarget = button, Placement = PlacementMode.Bottom };
+        void Add(string label, string command)
+        {
+            var item = new MenuItem { Header = label, Style = (Style)FindResource("RecordMenuItem") };
+            item.SetBinding(MenuItem.CommandProperty, new Binding(command) { Source = vm });
+            menu.Items.Add(item);
+        }
+        Add("手动添加地址…", nameof(MainViewModel.AddManualAddressCommand));
+        Add("撤销上次编辑", nameof(MainViewModel.UndoEditCommand));
+        Add("撤销上次扫描", nameof(MainViewModel.UndoScanCommand));
+        Add(vm.PauseButtonText, nameof(MainViewModel.TogglePauseCommand));
+        AddMenuSeparator(menu);
+        Add("内存查看器", nameof(MainViewModel.OpenMemoryViewerCommand));
+        Add("反汇编", nameof(MainViewModel.OpenDisassemblyCommand));
+        Add("指针扫描…", nameof(MainViewModel.OpenPointerScannerCommand));
+        Add("结构查看…", nameof(MainViewModel.OpenStructureViewerCommand));
+        AddMenuSeparator(menu);
+        Add("导入 CE 数据地址表 (.CT)…", nameof(MainViewModel.ImportCeTableCommand));
+        Add("导出 CE 数据地址表 (.CT)…", nameof(MainViewModel.ExportCeTableCommand));
+        AddMenuSeparator(menu);
+        var appearance = new MenuItem { Header = "显示与窗口设置…", Style = (Style)FindResource("RecordMenuItem") };
+        appearance.Click += (_, _) => AppearanceSettings.ShowSettings(this);
+        menu.Items.Add(appearance);
+        AppearanceSettings.ApplyPopup(menu);
+        menu.IsOpen = true;
     }
 
     private void PickerButton_MouseDown(object sender, MouseButtonEventArgs e)
@@ -124,29 +280,48 @@ public partial class MainWindow : Window
         AboutNavigation.IsChecked = index == 2;
     }
 
-    private async void RecordGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+    private async void RecordGrid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not DataGrid grid || DataContext is not MainViewModel vm) return;
         var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
         var row = FindAncestor<DataGridRow>(cell);
-        if (cell is null || row?.Item is not (ResultRow or WatchRow) || cell.Column.Header?.ToString() == "冻结") return;
-        string? action = ColumnEditAction(cell.Column);
+        if (cell is null || row?.Item is not (ResultRow or WatchRow)) return;
+        bool freeze = cell.Column.Header?.ToString() == "冻结";
+        string? action = freeze ? "edit-value" : ColumnEditAction(cell.Column);
         if (action is null) return;
+        // Protect the group on the first click, before DataGrid reduces selection on an unmodified click.
+        if (e.ClickCount == 1 && !freeze && Keyboard.Modifiers == ModifierKeys.None && grid.SelectedItems.Count > 1 && grid.SelectedItems.Contains(row.Item))
+        {
+            e.Handled = true;
+            grid.Focus();
+            return;
+        }
+        if (e.ClickCount != 2) return;
+        // Freeze checkboxes toggle once on the first click. The second click edits the selected group's value.
         e.Handled = true;
-        grid.SelectedItem = row.Item;
-        await DispatchRecordActionAsync(vm, row.Item, action);
+        if (!grid.SelectedItems.Contains(row.Item)) { grid.SelectedItems.Clear(); grid.SelectedItem = row.Item; }
+        object[] records = SelectedRecords(grid);
+        if (records.Length > 1 && action == "edit-address") { vm.SetStatus("编辑地址需要只选中一条记录；数值、类型和描述支持批量编辑。"); return; }
+        await DispatchRecordsActionAsync(vm, records, action);
     }
 
-    private async void RecordGrid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private static object[] SelectedRecords(DataGrid grid) => grid.SelectedItems.Cast<object>().Where(item => item is ResultRow or WatchRow).ToArray();
+    private async void AddSelectedResults_Click(object sender, RoutedEventArgs e) => await RunToolbarActionAsync(ResultGrid, "add-watch");
+    private async void RemoveCompactSelected_Click(object sender, RoutedEventArgs e) => await RunToolbarActionAsync(CompactWatchGrid, "remove-watch");
+    private async void RemoveFullSelected_Click(object sender, RoutedEventArgs e) => await RunToolbarActionAsync(FullWatchGrid, "remove-watch");
+    private async void WriteCompactSelected_Click(object sender, RoutedEventArgs e) => await WriteToolbarSelectionAsync(CompactWatchGrid);
+    private async void WriteFullSelected_Click(object sender, RoutedEventArgs e) => await WriteToolbarSelectionAsync(FullWatchGrid);
+    private async Task RunToolbarActionAsync(DataGrid grid, string action)
     {
-        if (e.ClickCount != 2 || sender is not DataGrid grid || DataContext is not MainViewModel vm) return;
-        var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
-        var row = FindAncestor<DataGridRow>(cell);
-        if (cell?.Column.Header?.ToString() != "冻结" || row?.Item is not WatchRow) return;
-        // A checkbox already toggled on the first click. Suppress the second toggle and edit the frozen value instead.
-        e.Handled = true;
-        grid.SelectedItem = row.Item;
-        await DispatchRecordActionAsync(vm, row.Item, "edit-value");
+        if (DataContext is MainViewModel vm) await DispatchRecordsActionAsync(vm, SelectedRecords(grid), action);
+    }
+    private async Task WriteToolbarSelectionAsync(DataGrid grid)
+    {
+        if (DataContext is not MainViewModel vm) return;
+        object[] records = SelectedRecords(grid);
+        if (records.Length == 0) { vm.SetStatus("请先在地址表中选择要写入的记录。"); return; }
+        try { await vm.WriteRecordsValueAsync(records, vm.EditValueText); }
+        catch (Exception ex) { vm.SetStatus($"批量写入未完成：{ex.Message}"); }
     }
 
     private void RecordGrid_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -173,6 +348,7 @@ public partial class MainWindow : Window
         menu.Placement = PlacementMode.MousePoint;
         _recordContextMenu = menu;
         menu.Closed += (_, _) => { if (ReferenceEquals(_recordContextMenu, menu)) _recordContextMenu = null; };
+        AppearanceSettings.ApplyPopup(menu);
         menu.IsOpen = true;
     }
 
@@ -313,9 +489,10 @@ public partial class MainWindow : Window
         };
     }
 
-    private static async Task DispatchRecordActionAsync(MainViewModel vm, object record, string action)
+    private static async Task DispatchRecordsActionAsync(MainViewModel vm, object[] records, string action)
     {
-        try { await vm.HandleRecordActionAsync(record, action); }
+        if (records.Length == 0) { vm.SetStatus("请先选择记录。"); return; }
+        try { await vm.HandleRecordsActionAsync(records, action); }
         catch (Exception ex) { vm.SetStatus($"地址操作未完成：{ex.Message}"); }
     }
 

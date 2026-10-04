@@ -303,6 +303,20 @@
         <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
     </Style>
 
+    <Style TargetType="Slider">
+        <Setter Property="Height" Value="26" />
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Slider">
+            <Grid Background="Transparent" Margin="1,0">
+                <Border Height="4" Background="#2D3E54" CornerRadius="2" VerticalAlignment="Center" />
+                <Track x:Name="PART_Track" Minimum="{TemplateBinding Minimum}" Maximum="{TemplateBinding Maximum}" Value="{TemplateBinding Value}" Orientation="Horizontal" IsDirectionReversed="{TemplateBinding IsDirectionReversed}">
+                    <Track.DecreaseRepeatButton><RepeatButton Command="Slider.DecreaseLarge" Focusable="False"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Height="4" Background="{StaticResource AccentBrush}" VerticalAlignment="Center" CornerRadius="2" /></ControlTemplate></RepeatButton.Template></RepeatButton></Track.DecreaseRepeatButton>
+                    <Track.Thumb><Thumb Width="15" Height="15" Cursor="Hand"><Thumb.Template><ControlTemplate TargetType="Thumb"><Border x:Name="SliderThumb" Background="{StaticResource AccentBrush}" CornerRadius="8" BorderBrush="#102B2A" BorderThickness="2" /><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SliderThumb" Property="Background" Value="#9AF1DD" /></Trigger></ControlTemplate.Triggers></ControlTemplate></Thumb.Template></Thumb></Track.Thumb>
+                    <Track.IncreaseRepeatButton><RepeatButton Command="Slider.IncreaseLarge" Focusable="False"><RepeatButton.Template><ControlTemplate TargetType="RepeatButton"><Border Background="Transparent" /></ControlTemplate></RepeatButton.Template></RepeatButton></Track.IncreaseRepeatButton>
+                </Track>
+            </Grid>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+
     <Style TargetType="ProgressBar">
         <Setter Property="Height" Value="4" />
         <Setter Property="Minimum" Value="0" />

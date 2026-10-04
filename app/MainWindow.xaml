@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Memory Studio · 进程内存工作台" Width="1280" Height="820"
-        MinWidth="1000" MinHeight="700" WindowStartupLocation="CenterScreen"
+        MinWidth="780" MinHeight="520" WindowStartupLocation="CenterScreen"
         UseLayoutRounding="True" TextOptions.TextFormattingMode="Display"
         Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
@@ -65,309 +65,145 @@
         <Style x:Key="FreezeCheckBox" TargetType="CheckBox" BasedOn="{StaticResource {x:Type CheckBox}}">
             <Style.Triggers><DataTrigger Binding="{Binding DataContext.IsBusy, RelativeSource={RelativeSource AncestorType=DataGrid}}" Value="True"><Setter Property="IsEnabled" Value="False" /></DataTrigger></Style.Triggers>
         </Style>
+        <Style x:Key="BusyCompactButton" TargetType="Button" BasedOn="{StaticResource CompactButton}">
+            <Style.Triggers><DataTrigger Binding="{Binding IsBusy}" Value="True"><Setter Property="IsEnabled" Value="False" /></DataTrigger><DataTrigger Binding="{Binding IsAttached}" Value="False"><Setter Property="IsEnabled" Value="False" /></DataTrigger></Style.Triggers>
+        </Style>
+        <Style x:Key="BusyPrimaryButton" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+            <Style.Triggers><DataTrigger Binding="{Binding IsBusy}" Value="True"><Setter Property="IsEnabled" Value="False" /></DataTrigger><DataTrigger Binding="{Binding IsAttached}" Value="False"><Setter Property="IsEnabled" Value="False" /></DataTrigger></Style.Triggers>
+        </Style>
         <DataTemplate x:Key="FreezeCell">
             <CheckBox IsChecked="{Binding IsFrozen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Style="{StaticResource FreezeCheckBox}" HorizontalAlignment="Center" ToolTip="单击切换冻结；双击编辑冻结数值" />
         </DataTemplate>
     </Window.Resources>
-    <Grid>
-        <Grid.RowDefinitions><RowDefinition Height="86" /><RowDefinition Height="*" /><RowDefinition Height="34" /></Grid.RowDefinitions>
-        <Grid.ColumnDefinitions><ColumnDefinition Width="82" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-
-        <!-- A quiet vertical rail; all destinations are real views. -->
+    <Grid x:Name="MainShell" SizeChanged="MainShell_SizeChanged">
+        <Grid.RowDefinitions><RowDefinition x:Name="MainHeaderRow" Height="86" /><RowDefinition Height="*" /><RowDefinition Height="34" /></Grid.RowDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition x:Name="RailColumn" Width="82" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
         <Border Grid.RowSpan="3" Background="#0E1520" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,1,0">
             <Grid>
-                <Grid.RowDefinitions><RowDefinition Height="86" /><RowDefinition Height="*" /><RowDefinition Height="88" /></Grid.RowDefinitions>
-                <Border Width="38" Height="38" CornerRadius="11" Background="{StaticResource AccentBrush}" VerticalAlignment="Center">
-                    <Path Data="M 3,4 L 3,20 M 9,8 L 9,16 M 15,2 L 15,22 M 21,7 L 21,17" Stroke="#09221E" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Width="23" Height="23" />
+                <Grid.RowDefinitions><RowDefinition x:Name="RailBrandRow" Height="86" /><RowDefinition Height="*" /><RowDefinition Height="88" /></Grid.RowDefinitions>
+                <Border Width="36" Height="36" CornerRadius="11" Background="{StaticResource AccentBrush}" VerticalAlignment="Center">
+                    <Path Data="M 3,4 L 3,20 M 9,8 L 9,16 M 15,2 L 15,22 M 21,7 L 21,17" Stroke="#09221E" StrokeThickness="2.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Width="22" Height="22" />
                 </Border>
-                <StackPanel Grid.Row="1" Margin="0,9,0,0">
+                <StackPanel Grid.Row="1" Margin="0,8,0,0">
                     <ToggleButton x:Name="ScanNavigation" Style="{StaticResource NavigationButton}" IsChecked="True" Click="ScanNavigation_Click" ToolTip="扫描工作台">
-                        <StackPanel>
-                            <Path Data="M 2,7 L 2,2 L 7,2 M 15,2 L 20,2 L 20,7 M 20,15 L 20,20 L 15,20 M 7,20 L 2,20 L 2,15 M 6,11 L 16,11 M 11,6 L 11,16" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.7" Width="22" Height="22" Stretch="Uniform" />
-                            <TextBlock Text="扫描" FontSize="11" Margin="0,8,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" />
-                        </StackPanel>
+                        <StackPanel><Path Data="M 2,7 L 2,2 L 7,2 M 15,2 L 20,2 L 20,7 M 20,15 L 20,20 L 15,20 M 7,20 L 2,20 L 2,15 M 6,11 L 16,11 M 11,6 L 11,16" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.7" Width="21" Height="21" Stretch="Uniform" /><TextBlock x:Name="NavScanLabel" Text="扫描" FontSize="11" Margin="0,7,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></StackPanel>
                     </ToggleButton>
-                    <ToggleButton x:Name="WatchNavigation" Style="{StaticResource NavigationButton}" Click="WatchNavigation_Click" ToolTip="地址表与冻结">
-                        <StackPanel>
-                            <Path Data="M 2,3 L 20,3 L 20,19 L 2,19 Z M 2,8 L 20,8 M 7,3 L 7,19 M 7,13 L 20,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.6" Width="22" Height="22" Stretch="Uniform" />
-                            <TextBlock Text="地址表" FontSize="11" Margin="0,8,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" />
-                        </StackPanel>
+                    <ToggleButton x:Name="WatchNavigation" Style="{StaticResource NavigationButton}" Click="WatchNavigation_Click" ToolTip="地址表">
+                        <StackPanel><Path Data="M 2,3 L 20,3 L 20,19 L 2,19 Z M 2,8 L 20,8 M 7,3 L 7,19 M 7,13 L 20,13" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.6" Width="21" Height="21" Stretch="Uniform" /><TextBlock x:Name="NavWatchLabel" Text="地址表" FontSize="11" Margin="0,7,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></StackPanel>
                     </ToggleButton>
                 </StackPanel>
                 <ToggleButton Grid.Row="2" x:Name="AboutNavigation" Style="{StaticResource NavigationButton}" Click="AboutNavigation_Click" VerticalAlignment="Center" ToolTip="关于 Memory Studio">
-                    <StackPanel>
-                        <Grid Width="22" Height="22"><Ellipse Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.6" /><TextBlock Text="i" FontFamily="Georgia" FontSize="17" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,-1,0,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></Grid>
-                        <TextBlock Text="关于" FontSize="11" Margin="0,8,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" />
-                    </StackPanel>
+                    <StackPanel><Grid Width="21" Height="21"><Ellipse Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" StrokeThickness="1.6" /><TextBlock Text="i" FontFamily="Georgia" FontSize="17" FontWeight="Bold" HorizontalAlignment="Center" Margin="0,-1,0,0" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></Grid><TextBlock x:Name="NavAboutLabel" Text="关于" FontSize="11" Margin="0,7,0,0" HorizontalAlignment="Center" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=ToggleButton}}" /></StackPanel>
                 </ToggleButton>
             </Grid>
         </Border>
-
-        <!-- Process context remains visible across every view. -->
         <Border Grid.Column="1" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,0,0,1" Background="#0F1722">
-            <Grid Margin="24,0">
+            <Grid x:Name="HeaderLayout" Margin="20,0">
+                <Grid.RowDefinitions><RowDefinition x:Name="HeaderFirstRow" Height="*" /><RowDefinition x:Name="HeaderSecondRow" Height="0" /></Grid.RowDefinitions>
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                <StackPanel VerticalAlignment="Center">
-                    <StackPanel Orientation="Horizontal">
-                        <TextBlock Text="Memory" FontSize="23" FontWeight="SemiBold" FontFamily="Segoe UI" />
-                        <TextBlock Text="Studio" FontSize="23" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource AccentBrush}" Margin="6,0,0,0" />
-                        <Border Background="#233146" CornerRadius="4" Margin="12,3,0,0" Padding="6,2" VerticalAlignment="Center"><TextBlock Text="x64" FontFamily="Consolas" FontSize="10" Foreground="#A8BDD6" /></Border>
+                <StackPanel x:Name="BrandHeader" VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal"><TextBlock Text="Memory" FontSize="23" FontWeight="SemiBold" FontFamily="Segoe UI" /><TextBlock Text="Studio" FontSize="23" FontWeight="SemiBold" FontFamily="Segoe UI" Foreground="{StaticResource AccentBrush}" Margin="6,0,0,0" /><Border Background="#233146" CornerRadius="4" Margin="12,3,0,0" Padding="6,2" VerticalAlignment="Center"><TextBlock Text="x64" FontFamily="Consolas" FontSize="10" Foreground="#A8BDD6" /></Border></StackPanel>
+                    <TextBlock x:Name="BrandSubtitle" Text="进程内存工作台" Style="{StaticResource MutedText}" Margin="0,3,0,0" />
+                </StackPanel>
+                <WrapPanel x:Name="HeaderActions" Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                    <StackPanel x:Name="ProcessActions" Orientation="Horizontal" Style="{StaticResource IdlePanel}">
+                        <Button x:Name="PickerButton" Width="36" Padding="7" Margin="0,0,7,0" PreviewMouseLeftButtonDown="PickerButton_MouseDown" PreviewMouseLeftButtonUp="PickerButton_MouseUp" LostMouseCapture="PickerButton_LostMouseCapture" ToolTip="按住准星拖到目标窗口，释放以连接；Esc 取消" AutomationProperties.Name="拖动准星选取目标窗口"><Grid Width="20" Height="20"><Ellipse Width="13" Height="13" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.5" /><Path Data="M 10,0 L 10,6 M 10,14 L 10,20 M 0,10 L 6,10 M 14,10 L 20,10" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.5" /></Grid></Button>
+                        <ComboBox x:Name="ProcessCombo" Width="225" ItemsSource="{Binding Processes}" SelectedItem="{Binding SelectedProcess}" DisplayMemberPath="DisplayName" ToolTip="目标进程" AutomationProperties.Name="目标进程" />
+                        <Button Command="{Binding RefreshProcessesCommand}" Width="36" Padding="7" Margin="7,0,0,0" ToolTip="刷新进程列表"><Path Data="M 17,7 A 7,7 0 1 0 18,13 M 17,2 L 17,7 L 12,7" Stroke="{StaticResource MutedBrush}" StrokeThickness="1.6" Width="18" Height="18" Stretch="Uniform" /></Button>
+                        <Button Content="连接进程" Command="{Binding AttachCommand}" Style="{StaticResource PrimaryButton}" Margin="7,0,0,0" Padding="12,8" />
                     </StackPanel>
-                    <TextBlock Text="进程内存工作台" Style="{StaticResource MutedText}" Margin="0,3,0,0" />
-                </StackPanel>
-                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Style="{StaticResource IdlePanel}">
-                    <Button x:Name="PickerButton" Width="38" Padding="8" Margin="0,0,8,0"
-                            PreviewMouseLeftButtonDown="PickerButton_MouseDown" PreviewMouseLeftButtonUp="PickerButton_MouseUp"
-                            LostMouseCapture="PickerButton_LostMouseCapture" ToolTip="按住准星拖到目标窗口，释放以连接进程；Esc 取消"
-                            AutomationProperties.Name="拖动准星选取目标窗口">
-                        <Grid Width="20" Height="20"><Ellipse Width="13" Height="13" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.5" /><Path Data="M 10,0 L 10,6 M 10,14 L 10,20 M 0,10 L 6,10 M 14,10 L 20,10" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.5" /></Grid>
-                    </Button>
-                    <ComboBox Width="240" ItemsSource="{Binding Processes}" SelectedItem="{Binding SelectedProcess}" DisplayMemberPath="DisplayName" ToolTip="选择要连接的进程" AutomationProperties.Name="目标进程" />
-                    <Button Command="{Binding RefreshProcessesCommand}" Width="38" Padding="8" Margin="8,0,0,0" ToolTip="刷新进程列表" AutomationProperties.Name="刷新进程列表">
-                        <Path Data="M 17,7 A 7,7 0 1 0 18,13 M 17,2 L 17,7 L 12,7" Stroke="{StaticResource MutedBrush}" StrokeThickness="1.6" Width="19" Height="19" Stretch="Uniform" />
-                    </Button>
-                    <Button Content="连接进程" Command="{Binding AttachCommand}" Style="{StaticResource PrimaryButton}" Margin="8,0,0,0" Padding="16,9" />
-                </StackPanel>
+                    <Button Content="工具 ▾" Click="ToolsButton_Click" Margin="7,0,0,0" Padding="10,8" ToolTip="手动添加、撤销、指针与结构工具、显示设置" />
+                </WrapPanel>
             </Grid>
         </Border>
-
-        <TabControl x:Name="WorkspaceTabs" Grid.Row="1" Grid.Column="1" Margin="20,18,20,14" SelectedIndex="0">
+        <TabControl x:Name="WorkspaceTabs" Grid.Row="1" Grid.Column="1" Margin="16,14,16,10" SelectedIndex="0">
             <TabItem Header="扫描">
-                <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="*" /><RowDefinition Height="12" /><RowDefinition Height="195" /></Grid.RowDefinitions>
-                    <Grid Grid.Row="0" Margin="2,0,2,12">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <StackPanel Orientation="Horizontal">
-                            <TextBlock Text="扫描工作台" FontSize="20" FontWeight="SemiBold" />
-                            <Border CornerRadius="12" Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" Margin="15,0,0,0" Padding="10,5" VerticalAlignment="Center">
-                                <StackPanel Orientation="Horizontal">
-                                    <Ellipse Width="6" Height="6" Margin="0,0,7,0">
-                                        <Ellipse.Style><Style TargetType="Ellipse"><Setter Property="Fill" Value="#687B93" /><Style.Triggers><DataTrigger Binding="{Binding IsAttached}" Value="True"><Setter Property="Fill" Value="{StaticResource AccentBrush}" /></DataTrigger></Style.Triggers></Style></Ellipse.Style>
-                                    </Ellipse>
-                                    <TextBlock Text="{Binding ProcessLabel}" FontSize="11" Foreground="{StaticResource MutedBrush}" MaxWidth="300" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProcessLabel}" />
-                                </StackPanel>
-                            </Border>
-                        </StackPanel>
-                        <Button Grid.Column="1" Command="{Binding LaunchDemoCommand}" Style="{StaticResource GhostButton}" Content="启动练习进程  ↗" FontSize="12" ToolTip="启动内置测试进程，练习数值扫描与修改" />
-                    </Grid>
-
-                    <Grid Grid.Row="1">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="14" /><ColumnDefinition Width="278" /></Grid.ColumnDefinitions>
-                        <Border Style="{StaticResource Card}">
-                            <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="59" /><RowDefinition Height="*" /><RowDefinition Height="46" /></Grid.RowDefinitions>
-                                <Grid Margin="18,0">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                    <StackPanel VerticalAlignment="Center"><TextBlock Text="扫描结果" Style="{StaticResource SectionTitle}" /><TextBlock Text="{Binding ResultSummary}" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel>
-                                    <Border Grid.Column="1" Background="#102B2A" CornerRadius="5" Padding="8,4" VerticalAlignment="Center"><TextBlock Text="{Binding ElapsedText}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource AccentBrush}" /></Border>
-                                </Grid>
-                                <Grid Grid.Row="1">
-                                    <DataGrid x:Name="ResultGrid" ItemsSource="{Binding Results}" SelectedItem="{Binding SelectedResult}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow"
-                                              MouseDoubleClick="RecordGrid_MouseDoubleClick" PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown"
-                                              PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown" ToolTip="Ctrl/Shift 多选；Ctrl+A 全选全部扫描结果（跨页）；双击按列编辑；右键批量操作" AutomationProperties.Name="扫描结果">
-                                        <DataGrid.Columns>
-                                            <DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.25*" MinWidth="145" ElementStyle="{StaticResource AddressCell}" />
-                                            <DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.4*" MinWidth="110" ElementStyle="{StaticResource ValueCell}" />
-                                            <DataGridTextColumn Header="类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="75" />
-                                        </DataGrid.Columns>
-                                    </DataGrid>
-                                    <StackPanel Style="{StaticResource EmptyResults}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Margin="12,35,12,10">
-                                        <Grid Width="52" Height="52" Margin="0,0,0,14">
-                                            <Border Background="#1C2B3D" CornerRadius="16" />
-                                            <Path Data="M 1,7 L 1,1 L 7,1 M 17,1 L 23,1 L 23,7 M 23,17 L 23,23 L 17,23 M 7,23 L 1,23 L 1,17 M 8,12 L 16,12" Stroke="#6F8FAF" StrokeThickness="1.6" Width="25" Height="25" Stretch="Uniform" />
-                                        </Grid>
-                                        <TextBlock Text="从一个数值开始" HorizontalAlignment="Center" FontSize="15" FontWeight="Medium" />
-                                        <TextBlock Text="连接进程，设置扫描条件后开始首次扫描" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,7,0,0" TextWrapping="Wrap" TextAlignment="Center" />
-                                    </StackPanel>
-                                </Grid>
-                                <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
-                                    <Grid Margin="12,0">
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                                            <Button Content="‹" Command="{Binding PreviousPageCommand}" Style="{StaticResource CompactButton}" Width="29" Padding="0" ToolTip="上一页" />
-                                            <TextBlock Text="{Binding PageLabel}" Style="{StaticResource MutedText}" Margin="9,0" />
-                                            <Button Content="›" Command="{Binding NextPageCommand}" Style="{StaticResource CompactButton}" Width="29" Padding="0" ToolTip="下一页" />
-                                            <Button Content="全选本页" Click="SelectAllResults_Click" Style="{StaticResource GhostButton}" FontSize="11" Padding="8,5" MinHeight="30" Margin="5,0,0,0" ToolTip="只选择当前页结果" />
-                                            <Button Content="全选全部" Click="SelectAllScanResults_Click" Style="{StaticResource GhostButton}" FontSize="11" Padding="7,5" MinHeight="30" ToolTip="Ctrl+A；全选全部扫描结果（跨页）；较大列表会显示加载进度" />
-                                        </StackPanel>
-                                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                            <Button Content="反汇编" Command="{Binding OpenDisassemblyCommand}" Style="{StaticResource CompactButton}" Margin="0,0,7,0" ToolTip="查看所选地址附近的机器指令" />
-                                            <Button Content="内存查看" Command="{Binding OpenMemoryViewerCommand}" Style="{StaticResource CompactButton}" Margin="0,0,7,0" />
-                                            <Button Content="＋ 添加到地址表" Command="{Binding AddSelectedCommand}" Style="{StaticResource CompactButton}" ToolTip="添加所选结果；也可在右键菜单中添加" />
-                                        </StackPanel>
-                                    </Grid>
-                                </Border>
-                            </Grid>
-                        </Border>
-
-                        <Border Grid.Column="2" Style="{StaticResource Card}">
-                            <Grid>
-                                <Grid.RowDefinitions><RowDefinition Height="43" /><RowDefinition Height="*" /><RowDefinition Height="90" /></Grid.RowDefinitions>
-                                <TextBlock Text="扫描设置" Style="{StaticResource SectionTitle}" Margin="18,0" />
-                                <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
-                                    <StackPanel Style="{StaticResource IdlePanel}" Margin="18,0,18,12">
-                                        <Grid>
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="59" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                            <TextBlock Text="数据类型" Style="{StaticResource MutedText}" FontSize="11" />
-                                            <ComboBox Grid.Column="1" ItemsSource="{Binding TypeOptions}" SelectedItem="{Binding SelectedType}" DisplayMemberPath="Label" Height="36" MinHeight="36" FontSize="12" AutomationProperties.Name="数据类型" />
-                                        </Grid>
-                                        <Grid Margin="0,5,0,0">
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="59" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                            <TextBlock Text="扫描方式" Style="{StaticResource MutedText}" FontSize="11" />
-                                            <ComboBox Grid.Column="1" ItemsSource="{Binding ScanModes}" SelectedItem="{Binding SelectedScanMode}" DisplayMemberPath="Label" Height="36" MinHeight="36" FontSize="12" AutomationProperties.Name="扫描方式" />
-                                        </Grid>
-                                        <Grid Margin="0,5,0,0">
-                                            <Grid.ColumnDefinitions><ColumnDefinition Width="59" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                            <TextBlock Text="扫描数值" Style="{StaticResource MutedText}" FontSize="11" />
-                                            <TextBox Grid.Column="1" Text="{Binding SearchValue, UpdateSourceTrigger=PropertyChanged}" Height="36" MinHeight="36" FontFamily="Consolas" FontSize="15" AutomationProperties.Name="扫描数值" ToolTip="按所选类型输入数值；未知初始值和变化筛选可留空" />
-                                        </Grid>
-                                        <StackPanel Orientation="Horizontal" Margin="0,14,0,0">
-                                            <CheckBox Content="按类型对齐" IsChecked="{Binding AlignmentEnabled}" FontSize="11" ToolTip="只扫描与数据大小对齐的地址，提高扫描速度" />
-                                            <CheckBox Content="可写内存" IsChecked="{Binding WritableOnly}" Margin="16,0,0,0" FontSize="11" ToolTip="仅扫描拥有写权限的内存区域" />
-                                        </StackPanel>
-                                        <Expander Header="限定地址范围" Margin="0,17,0,0" FontSize="11">
-                                            <StackPanel Margin="0,10,0,0">
-                                                <TextBlock Text="起始地址（十六进制，可留空）" Style="{StaticResource FieldLabel}" FontSize="10" />
-                                                <TextBox Text="{Binding StartAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="33" Padding="9,7" />
-                                                <TextBlock Text="结束地址（十六进制，可留空）" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,9,0,7" />
-                                                <TextBox Text="{Binding EndAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="33" Padding="9,7" />
-                                            </StackPanel>
-                                        </Expander>
-                                    </StackPanel>
-                                </ScrollViewer>
-                                <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="18,10,18,6">
-                                <StackPanel>
-                                    <Grid>
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="9" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                        <Button Content="首次扫描" Command="{Binding FirstScanCommand}" Style="{StaticResource PrimaryButton}" Padding="8,8" />
-                                        <Button Grid.Column="2" Content="再次筛选" Command="{Binding NextScanCommand}" Padding="8,8" />
-                                    </Grid>
-                                    <Grid Margin="0,4,0,0">
-                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="9" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                                        <Button Content="重置扫描" Command="{Binding NewScanCommand}" Style="{StaticResource GhostButton}" FontSize="11" Height="26" MinHeight="26" Padding="6,3" />
-                                        <Button Grid.Column="2" Content="停止" Command="{Binding CancelScanCommand}" Style="{StaticResource GhostButton}" FontSize="11" Height="26" MinHeight="26" Padding="6,3" />
-                                    </Grid>
-                                    <ProgressBar Value="{Binding ScanProgress, Mode=OneWay}" Margin="0,4,0,0" Visibility="{Binding IsBusy, Converter={StaticResource BoolVisibility}}" />
-                                </StackPanel>
-                                </Border>
-                            </Grid>
-                        </Border>
-                    </Grid>
-
-                    <!-- Compact watch table is always close to the scan results. -->
-                    <Border Grid.Row="3" Style="{StaticResource Card}">
-                        <Grid>
-                            <Grid.RowDefinitions><RowDefinition Height="45" /><RowDefinition Height="*" /><RowDefinition Height="43" /></Grid.RowDefinitions>
-                            <Grid Margin="18,0">
-                                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                <StackPanel Orientation="Horizontal" VerticalAlignment="Center"><TextBlock Text="地址表" Style="{StaticResource SectionTitle}" /><TextBlock Text="持续监视 · 勾选以冻结" Style="{StaticResource MutedText}" FontSize="11" Margin="14,0,0,0" /></StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="全选" Click="SelectAllCompactWatch_Click" Style="{StaticResource GhostButton}" FontSize="11" ToolTip="Ctrl+A；选择全部监视地址" /><Button Content="导入" Command="{Binding LoadTableCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="保存" Command="{Binding SaveTableCommand}" Style="{StaticResource GhostButton}" FontSize="11" /></StackPanel>
-                            </Grid>
-                            <Grid Grid.Row="1">
-                                <DataGrid x:Name="CompactWatchGrid" ItemsSource="{Binding Watches}" SelectedItem="{Binding SelectedWatch}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow"
-                                          MouseDoubleClick="RecordGrid_MouseDoubleClick" PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown"
-                                          PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown" ToolTip="Ctrl/Shift 多选；Ctrl+A 全选全部；双击按列编辑；右键批量操作" AutomationProperties.Name="监视地址表">
-                                    <DataGrid.Columns>
-                                        <DataGridTemplateColumn Header="冻结" Width="58" CellTemplate="{StaticResource FreezeCell}" />
-                                        <DataGridTextColumn Header="描述" Binding="{Binding Description, UpdateSourceTrigger=PropertyChanged}" Width="1.35*" MinWidth="90" />
-                                        <DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.2*" MinWidth="145" IsReadOnly="True" ElementStyle="{StaticResource AddressCell}" />
-                                        <DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.2*" MinWidth="100" IsReadOnly="True" ElementStyle="{StaticResource ValueCell}" />
-                                        <DataGridTextColumn Header="类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="75" IsReadOnly="True" />
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                                <StackPanel Style="{StaticResource EmptyWatches}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Margin="0,24,0,0"><TextBlock Text="将扫描结果加入地址表，开始实时监视" Style="{StaticResource MutedText}" FontSize="11" /></StackPanel>
-                            </Grid>
-                            <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
-                                <Grid Margin="15,0">
-                                    <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                                    <TextBlock Text="{Binding Watches.Count, StringFormat=已记录 {0} 个地址}" Style="{StaticResource MutedText}" FontSize="11" />
-                                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                        <TextBlock Text="新值" Style="{StaticResource MutedText}" FontSize="11" Margin="0,0,8,0" />
-                                        <TextBox Text="{Binding EditValueText, UpdateSourceTrigger=PropertyChanged}" Width="135" MinHeight="29" Height="29" Padding="9,4" FontFamily="Consolas" FontSize="12" AutomationProperties.Name="写入数值" />
-                                        <Button Content="写入" Command="{Binding WriteSelectedCommand}" Style="{StaticResource CompactButton}" Margin="7,0,0,0" />
-                                        <Button Content="移除" Command="{Binding RemoveWatchCommand}" Style="{StaticResource CompactButton}" Margin="7,0,0,0" />
-                                    </StackPanel>
-                                </Grid>
-                            </Border>
-                        </Grid>
-                    </Border>
-                </Grid>
-            </TabItem>
-
-            <TabItem Header="地址表">
-                <Grid>
-                    <Grid.RowDefinitions><RowDefinition Height="58" /><RowDefinition Height="*" /><RowDefinition Height="14" /><RowDefinition Height="90" /></Grid.RowDefinitions>
-                    <Grid Margin="2,0,2,16">
-                        <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                        <StackPanel><TextBlock Text="地址表" FontSize="22" FontWeight="SemiBold" /><TextBlock Text="跟踪关键数值，写入修改并保持冻结" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel>
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="导入地址表" Command="{Binding LoadTableCommand}" /><Button Content="保存地址表" Command="{Binding SaveTableCommand}" Style="{StaticResource PrimaryButton}" Margin="9,0,0,0" /></StackPanel>
-                    </Grid>
-                    <Border Grid.Row="1" Style="{StaticResource Card}">
-                        <Grid>
-                            <Grid.RowDefinitions><RowDefinition Height="51" /><RowDefinition Height="*" /><RowDefinition Height="37" /></Grid.RowDefinitions>
-                            <Grid Margin="18,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="监视列表" Style="{StaticResource SectionTitle}" /><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center"><Button Content="全选全部" Click="SelectAllFullWatch_Click" Style="{StaticResource GhostButton}" FontSize="11" ToolTip="Ctrl+A；选择全部监视地址" /><TextBlock Text="{Binding Watches.Count, StringFormat={}{0} 个地址}" Style="{StaticResource MutedText}" Margin="12,0,0,0" /></StackPanel></Grid>
-                            <Grid Grid.Row="1">
-                                <DataGrid x:Name="FullWatchGrid" ItemsSource="{Binding Watches}" SelectedItem="{Binding SelectedWatch}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" RowHeight="43"
-                                          MouseDoubleClick="RecordGrid_MouseDoubleClick" PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown"
-                                          PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown" ToolTip="Ctrl/Shift 多选；Ctrl+A 全选全部；双击按列编辑；右键批量操作" AutomationProperties.Name="完整地址表">
-                                    <DataGrid.Columns>
-                                        <DataGridTemplateColumn Header="冻结" Width="68" CellTemplate="{StaticResource FreezeCell}" />
-                                        <DataGridTextColumn Header="描述（双击编辑）" Binding="{Binding Description, UpdateSourceTrigger=PropertyChanged}" Width="1.5*" MinWidth="130" />
-                                        <DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.3*" MinWidth="160" IsReadOnly="True" ElementStyle="{StaticResource AddressCell}" />
-                                        <DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.25*" MinWidth="130" IsReadOnly="True" ElementStyle="{StaticResource ValueCell}" />
-                                        <DataGridTextColumn Header="数据类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="90" IsReadOnly="True" />
-                                    </DataGrid.Columns>
-                                </DataGrid>
-                                <StackPanel Style="{StaticResource EmptyWatches}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False">
-                                    <TextBlock Text="还没有监视地址" HorizontalAlignment="Center" FontSize="17" FontWeight="SemiBold" />
-                                    <TextBlock Text="在扫描工作台添加结果，或导入已有地址表" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,8,0,0" />
-                                </StackPanel>
-                            </Grid>
-                            <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="18,0"><TextBlock Text="地址表对应当前连接的进程；重新启动目标后，地址可能发生变化。" Style="{StaticResource MutedText}" FontSize="11" /></Border>
-                        </Grid>
-                    </Border>
-                    <Border Grid.Row="3" Style="{StaticResource Card}" Padding="20,14">
-                        <Grid>
+                <ScrollViewer x:Name="ScanPageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" ScrollChanged="ResultGrid_ScrollChanged">
+                    <Grid>
+                        <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="Auto" /><RowDefinition Height="12" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                        <Grid Grid.Row="0" Margin="2,0,2,12">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                            <StackPanel VerticalAlignment="Center"><TextBlock Text="修改所选地址" Style="{StaticResource SectionTitle}" /><TextBlock Text="输入与地址类型对应的新值；冻结后会持续写入该数值。" Style="{StaticResource MutedText}" Margin="0,5,0,0" FontSize="11" /></StackPanel>
-                            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                                <TextBox Text="{Binding EditValueText, UpdateSourceTrigger=PropertyChanged}" Width="185" FontFamily="Consolas" FontSize="14" AutomationProperties.Name="地址表写入数值" />
-                                <Button Content="写入数值" Command="{Binding WriteSelectedCommand}" Style="{StaticResource PrimaryButton}" Margin="9,0,0,0" />
-                                <Button Content="移除地址" Command="{Binding RemoveWatchCommand}" Margin="9,0,0,0" />
-                            </StackPanel>
+                            <StackPanel Orientation="Horizontal"><TextBlock Text="扫描工作台" FontSize="20" FontWeight="SemiBold" /><Border Background="{StaticResource SurfaceBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Margin="12,0,0,0" Padding="9,5" VerticalAlignment="Center"><StackPanel Orientation="Horizontal"><Ellipse Width="6" Height="6" Margin="0,0,6,0"><Ellipse.Style><Style TargetType="Ellipse"><Setter Property="Fill" Value="#687B93" /><Style.Triggers><DataTrigger Binding="{Binding IsAttached}" Value="True"><Setter Property="Fill" Value="{StaticResource AccentBrush}" /></DataTrigger></Style.Triggers></Style></Ellipse.Style></Ellipse><TextBlock x:Name="ProcessBadgeText" Text="{Binding ProcessLabel}" FontSize="11" Foreground="{StaticResource MutedBrush}" MaxWidth="280" TextTrimming="CharacterEllipsis" ToolTip="{Binding ProcessLabel}" /></StackPanel></Border></StackPanel>
+                            <Button x:Name="PracticeButton" Grid.Column="1" Command="{Binding LaunchDemoCommand}" Style="{StaticResource GhostButton}" Content="启动练习 ↗" FontSize="11" Padding="7,6" ToolTip="启动内置练习进程" />
                         </Grid>
-                    </Border>
-                </Grid>
+                        <Grid Grid.Row="1" x:Name="ScanLayout">
+                            <Grid.RowDefinitions><RowDefinition x:Name="ScanLayoutFirstRow" Height="Auto" /><RowDefinition x:Name="ScanLayoutGapRow" Height="0" /><RowDefinition x:Name="ScanLayoutLastRow" Height="0" /></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition x:Name="ScanGapColumn" Width="14" /><ColumnDefinition x:Name="ScanSettingsColumn" Width="286" /></Grid.ColumnDefinitions>
+                            <Border x:Name="ResultsCard" Style="{StaticResource Card}" Height="370">
+                                <Grid><Grid.RowDefinitions><RowDefinition Height="59" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <Grid Margin="17,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="扫描结果" Style="{StaticResource SectionTitle}" /><TextBlock Text="{Binding ResultSummary}" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel><Border Grid.Column="1" Background="#102B2A" CornerRadius="5" Padding="8,4" VerticalAlignment="Center"><TextBlock Text="{Binding ElapsedText}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource AccentBrush}" /></Border></Grid>
+                                    <Grid Grid.Row="1">
+                                        <DataGrid x:Name="ResultGrid" ItemsSource="{Binding Results}" SelectedItem="{Binding SelectedResult}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow"
+                                                  PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown" PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown"
+                                                  Loaded="ResultGrid_Loaded" ScrollViewer.ScrollChanged="ResultGrid_ScrollChanged"
+                                                  ToolTip="Ctrl/Shift 多选；Ctrl+A 全选全部扫描结果；双击已选行按列批量编辑；右键更多操作" AutomationProperties.Name="扫描结果">
+                                            <DataGrid.Columns><DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.25*" MinWidth="145" ElementStyle="{StaticResource AddressCell}" /><DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.4*" MinWidth="110" ElementStyle="{StaticResource ValueCell}" /><DataGridTextColumn Header="类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="75" /></DataGrid.Columns>
+                                        </DataGrid>
+                                        <StackPanel Style="{StaticResource EmptyResults}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Margin="12,25,12,5"><Grid Width="45" Height="45" Margin="0,0,0,11"><Border Background="#1C2B3D" CornerRadius="14" /><Path Data="M 1,7 L 1,1 L 7,1 M 17,1 L 23,1 L 23,7 M 23,17 L 23,23 L 17,23 M 7,23 L 1,23 L 1,17 M 8,12 L 16,12" Stroke="#6F8FAF" StrokeThickness="1.6" Width="23" Height="23" Stretch="Uniform" /></Grid><TextBlock Text="从一个数值开始" HorizontalAlignment="Center" FontSize="15" /><TextBlock Text="连接进程，设置条件后开始扫描" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,7,0,0" TextWrapping="Wrap" TextAlignment="Center" /></StackPanel>
+                                    </Grid>
+                                    <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
+                                        <WrapPanel Margin="11,6" VerticalAlignment="Center">
+                                            <Button Content="‹" Command="{Binding PreviousPageCommand}" Style="{StaticResource CompactButton}" Width="27" Padding="0" ToolTip="上一页" /><TextBlock Text="{Binding PageLabel}" Style="{StaticResource MutedText}" Margin="8,0" /><Button Content="›" Command="{Binding NextPageCommand}" Style="{StaticResource CompactButton}" Width="27" Padding="0" ToolTip="下一页" />
+                                            <Button Content="本页" Click="SelectAllResults_Click" Style="{StaticResource GhostButton}" FontSize="11" Padding="8,5" MinHeight="30" Margin="4,0" ToolTip="全选本页" /><Button Content="全选" Click="SelectAllScanResults_Click" Style="{StaticResource GhostButton}" FontSize="11" Padding="8,5" MinHeight="30" ToolTip="Ctrl+A；全选全部扫描结果（跨页）" />
+                                            <Button Content="反汇编" Command="{Binding OpenDisassemblyCommand}" Style="{StaticResource CompactButton}" Margin="8,0,5,0" /><Button Content="内存查看" Command="{Binding OpenMemoryViewerCommand}" Style="{StaticResource CompactButton}" Margin="0,0,5,0" /><Button Content="＋ 添加所选" Click="AddSelectedResults_Click" Style="{StaticResource BusyCompactButton}" ToolTip="将所有选中结果加入地址表" />
+                                        </WrapPanel>
+                                    </Border>
+                                </Grid>
+                            </Border>
+                            <Border x:Name="ScanSettingsCard" Grid.Column="2" Style="{StaticResource Card}" Height="370">
+                                <Grid><Grid.RowDefinitions><RowDefinition Height="43" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                    <Button x:Name="ScanSettingsToggle" Content="扫描设置" Click="ScanSettingsToggle_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Left" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" Padding="17,8" ToolTip="展开或折叠扫描条件" />
+                                    <ScrollViewer x:Name="ScanSettingsFields" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                                        <StackPanel Style="{StaticResource IdlePanel}" Margin="17,0,17,12">
+                                            <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock Text="数据类型" Style="{StaticResource MutedText}" FontSize="11" /><ComboBox Grid.Column="1" ItemsSource="{Binding TypeOptions}" SelectedItem="{Binding SelectedType}" DisplayMemberPath="Label" MinHeight="36" FontSize="12" /></Grid>
+                                            <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock Text="扫描方式" Style="{StaticResource MutedText}" FontSize="11" /><ComboBox Grid.Column="1" ItemsSource="{Binding ScanModes}" SelectedItem="{Binding SelectedScanMode}" DisplayMemberPath="Label" MinHeight="36" FontSize="12" /></Grid>
+                                            <Grid Margin="0,6,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock Text="扫描数值" Style="{StaticResource MutedText}" FontSize="11" /><TextBox Grid.Column="1" Text="{Binding SearchValue, UpdateSourceTrigger=PropertyChanged}" MinHeight="36" FontFamily="Consolas" FontSize="14" ToolTip="精确值、比较下限或增加/减少的差量" /></Grid>
+                                            <Grid Margin="0,6,0,0"><Grid.Style><Style TargetType="Grid"><Setter Property="Visibility" Value="Collapsed" /><Style.Triggers><DataTrigger Binding="{Binding SelectedScanMode.Value}" Value="8"><Setter Property="Visibility" Value="Visible" /></DataTrigger></Style.Triggers></Style></Grid.Style><Grid.ColumnDefinitions><ColumnDefinition Width="58" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><TextBlock Text="范围上限" Style="{StaticResource MutedText}" FontSize="11" /><TextBox Grid.Column="1" Text="{Binding SearchUpperValue, UpdateSourceTrigger=PropertyChanged}" MinHeight="36" FontFamily="Consolas" FontSize="14" /></Grid>
+                                            <WrapPanel Margin="0,13,0,0"><CheckBox Content="类型对齐" IsChecked="{Binding AlignmentEnabled}" FontSize="11" Margin="0,0,12,7" /><CheckBox Content="可写内存" IsChecked="{Binding WritableOnly}" FontSize="11" Margin="0,0,0,7" /></WrapPanel>
+                                            <CheckBox Content="十六进制显示 / 输入" IsChecked="{Binding HexDisplayEnabled}" FontSize="11" Margin="0,2,0,0" ToolTip="整数显示十六进制；浮点数显示其 IEEE 原始位模式" />
+                                            <Expander Header="浮点比较容差" Margin="0,13,0,0" FontSize="11"><StackPanel Margin="0,9,0,0"><CheckBox Content="启用近似比较" IsChecked="{Binding FloatToleranceEnabled}" FontSize="11" Margin="0,0,0,9" /><TextBlock Text="绝对容差" Style="{StaticResource FieldLabel}" FontSize="10" /><TextBox Text="{Binding FloatToleranceText, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /><TextBlock Text="相对容差" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,8,0,7" /><TextBox Text="{Binding RelativeToleranceText, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /></StackPanel></Expander>
+                                            <Expander Header="限定地址范围" Margin="0,12,0,0" FontSize="11"><StackPanel Margin="0,9,0,0"><TextBlock Text="起始地址（十六进制）" Style="{StaticResource FieldLabel}" FontSize="10" /><TextBox Text="{Binding StartAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /><TextBlock Text="结束地址（不包含）" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,8,0,7" /><TextBox Text="{Binding EndAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /></StackPanel></Expander>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                    <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="17,10,17,7">
+                                        <StackPanel><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="8" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><Button Content="首次扫描" Command="{Binding FirstScanCommand}" Style="{StaticResource PrimaryButton}" Padding="8,8" /><Button Grid.Column="2" Content="再次筛选" Command="{Binding NextScanCommand}" Padding="8,8" /></Grid><WrapPanel Margin="0,4,0,0" HorizontalAlignment="Center"><Button Content="重置" Command="{Binding NewScanCommand}" Style="{StaticResource GhostButton}" FontSize="11" Padding="7,4" MinHeight="26" /><Button Content="停止" Command="{Binding CancelScanCommand}" Style="{StaticResource GhostButton}" FontSize="11" Padding="7,4" MinHeight="26" /><Button Content="撤销扫描" Command="{Binding UndoScanCommand}" Style="{StaticResource GhostButton}" FontSize="11" Padding="7,4" MinHeight="26" /></WrapPanel><ProgressBar Value="{Binding ScanProgress, Mode=OneWay}" Margin="0,4,0,0" Visibility="{Binding IsBusy, Converter={StaticResource BoolVisibility}}" /></StackPanel>
+                                    </Border>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                        <Border x:Name="CompactWatchCard" Grid.Row="3" Style="{StaticResource Card}" Height="200">
+                            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                                <WrapPanel Margin="14,5"><TextBlock Text="地址表" Style="{StaticResource SectionTitle}" Margin="0,0,12,0" /><Button Content="新增地址" Command="{Binding AddManualAddressCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="全选" Click="SelectAllCompactWatch_Click" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="{Binding PauseButtonText}" Command="{Binding TogglePauseCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="撤销编辑" Command="{Binding UndoEditCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="导入" Command="{Binding LoadTableCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="保存" Command="{Binding SaveTableCommand}" Style="{StaticResource GhostButton}" FontSize="11" /></WrapPanel>
+                                <Grid Grid.Row="1"><DataGrid x:Name="CompactWatchGrid" ItemsSource="{Binding Watches}" SelectedItem="{Binding SelectedWatch}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown" PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown" ToolTip="Ctrl/Shift 多选；双击已选行按列批量编辑；冻结框单击切换，双击批量编辑数值" AutomationProperties.Name="监视地址表"><DataGrid.Columns><DataGridTemplateColumn Header="冻结" Width="56" CellTemplate="{StaticResource FreezeCell}" /><DataGridTextColumn Header="描述" Binding="{Binding Description}" Width="1.35*" MinWidth="90" /><DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.2*" MinWidth="145" ElementStyle="{StaticResource AddressCell}" /><DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.2*" MinWidth="100" ElementStyle="{StaticResource ValueCell}" /><DataGridTextColumn Header="类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="75" /></DataGrid.Columns></DataGrid><StackPanel Style="{StaticResource EmptyWatches}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False" Margin="0,24,0,0"><TextBlock Text="添加扫描结果或手动输入监视地址" Style="{StaticResource MutedText}" FontSize="11" /></StackPanel></Grid>
+                                <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0"><WrapPanel Margin="12,6" VerticalAlignment="Center"><TextBlock Text="{Binding Watches.Count, StringFormat=已记录 {0} 个地址}" Style="{StaticResource MutedText}" FontSize="11" Margin="0,0,14,0" /><TextBox Text="{Binding EditValueText, UpdateSourceTrigger=PropertyChanged}" Width="130" MinHeight="30" Padding="8,4" FontFamily="Consolas" FontSize="12" ToolTip="写入所有选中监视地址的新值" /><Button Content="写入所选" Click="WriteCompactSelected_Click" Style="{StaticResource BusyCompactButton}" Margin="7,0,0,0" /><Button Content="移除所选" Click="RemoveCompactSelected_Click" Style="{StaticResource BusyCompactButton}" Margin="7,0,0,0" /></WrapPanel></Border>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </ScrollViewer>
             </TabItem>
-
-            <TabItem Header="关于">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <StackPanel MaxWidth="820" Margin="24,26" HorizontalAlignment="Center">
-                        <Border Width="72" Height="72" CornerRadius="21" Background="{StaticResource AccentSoftBrush}" HorizontalAlignment="Left" Margin="0,0,0,25"><Path Data="M 3,4 L 3,20 M 9,8 L 9,16 M 15,2 L 15,22 M 21,7 L 21,17" Stroke="{StaticResource AccentBrush}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Width="35" Height="35" /></Border>
-                        <TextBlock Text="让内存里的变化，更清晰。" FontSize="30" FontWeight="SemiBold" Margin="0,0,0,12" />
-                        <TextBlock Text="Memory Studio 是一个 Windows 进程内存工作台。通过扫描、逐次筛选和实时监视，找到程序中变化的数值，并观察修改后的行为。" Style="{StaticResource MutedText}" FontSize="14" TextWrapping="Wrap" LineHeight="24" Margin="0,0,0,30" />
-                        <UniformGrid Columns="3" Margin="0,0,0,24">
-                            <Border Style="{StaticResource Card}" Padding="20" Margin="0,0,10,0"><StackPanel><TextBlock Text="01" FontFamily="Consolas" FontSize="12" Foreground="{StaticResource AccentBrush}" /><TextBlock Text="连接" FontSize="18" FontWeight="SemiBold" Margin="0,11,0,7" /><TextBlock Text="选择目标进程，或启动内置练习程序。" Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="20" /></StackPanel></Border>
-                            <Border Style="{StaticResource Card}" Padding="20" Margin="0,0,10,0"><StackPanel><TextBlock Text="02" FontFamily="Consolas" FontSize="12" Foreground="{StaticResource AccentBrush}" /><TextBlock Text="筛选" FontSize="18" FontWeight="SemiBold" Margin="0,11,0,7" /><TextBlock Text="首次扫描建立结果，再用变化条件缩小范围。" Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="20" /></StackPanel></Border>
-                            <Border Style="{StaticResource Card}" Padding="20"><StackPanel><TextBlock Text="03" FontFamily="Consolas" FontSize="12" Foreground="{StaticResource AccentBrush}" /><TextBlock Text="观察" FontSize="18" FontWeight="SemiBold" Margin="0,11,0,7" /><TextBlock Text="添加地址，修改数值并观察实时变化。" Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="20" /></StackPanel></Border>
-                        </UniformGrid>
-                        <Border Style="{StaticResource Card}" Padding="22"><StackPanel><TextBlock Text="从练习进程开始" Style="{StaticResource SectionTitle}" /><TextBlock Text="内置测试目标提供整数、浮点数、字符串与字节序列。先查看目标数值，在扫描面板输入对应类型和值，然后改变目标数值并再次筛选。" Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="22" Margin="0,9,0,18" /><Button Content="启动练习进程  ↗" Command="{Binding LaunchDemoCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" /></StackPanel></Border>
-                        <TextBlock Text="C++20 扫描核心  /  C# · WPF 界面  /  Windows x64" Style="{StaticResource MutedText}" FontSize="11" Margin="0,26,0,0" />
-                        <TextBlock Text="用于你有权调试的本机程序。某些受保护的系统进程无法连接。" Style="{StaticResource MutedText}" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0" />
+            <TabItem Header="地址表">
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                    <StackPanel>
+                        <WrapPanel Margin="2,0,2,14"><StackPanel Margin="0,0,20,8"><TextBlock Text="地址表" FontSize="22" FontWeight="SemiBold" /><TextBlock Text="多选后双击批量编辑；冻结和暂停均可恢复" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel><Button Content="新增地址" Command="{Binding AddManualAddressCommand}" Margin="0,5,8,0" /><Button Content="导入" Command="{Binding LoadTableCommand}" Margin="0,5,8,0" /><Button Content="保存" Command="{Binding SaveTableCommand}" Style="{StaticResource PrimaryButton}" Margin="0,5,0,0" /></WrapPanel>
+                        <Border x:Name="FullWatchCard" Style="{StaticResource Card}" Height="425">
+                            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="*" /><RowDefinition Height="37" /></Grid.RowDefinitions>
+                                <WrapPanel Margin="14,5"><TextBlock Text="监视列表" Style="{StaticResource SectionTitle}" Margin="0,0,14,0" /><Button Content="全选全部" Click="SelectAllFullWatch_Click" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="{Binding PauseButtonText}" Command="{Binding TogglePauseCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><Button Content="撤销编辑" Command="{Binding UndoEditCommand}" Style="{StaticResource GhostButton}" FontSize="11" /><TextBlock Text="{Binding Watches.Count, StringFormat={}{0} 个地址}" Style="{StaticResource MutedText}" Margin="12,0,0,0" /></WrapPanel>
+                                <Grid Grid.Row="1"><DataGrid x:Name="FullWatchGrid" ItemsSource="{Binding Watches}" SelectedItem="{Binding SelectedWatch}" IsReadOnly="True" SelectionMode="Extended" SelectionUnit="FullRow" RowHeight="39" PreviewMouseRightButtonDown="RecordGrid_MouseRightButtonDown" PreviewMouseLeftButtonDown="RecordGrid_MouseLeftButtonDown" PreviewKeyDown="RecordGrid_PreviewKeyDown" ToolTip="Ctrl/Shift 多选；双击已选行按列批量编辑；右键完整操作" AutomationProperties.Name="完整地址表"><DataGrid.Columns><DataGridTemplateColumn Header="冻结" Width="60" CellTemplate="{StaticResource FreezeCell}" /><DataGridTextColumn Header="描述" Binding="{Binding Description}" Width="1.5*" MinWidth="115" /><DataGridTextColumn Header="内存地址" Binding="{Binding AddressText}" Width="1.3*" MinWidth="155" ElementStyle="{StaticResource AddressCell}" /><DataGridTextColumn Header="当前数值" Binding="{Binding ValueText}" Width="1.25*" MinWidth="105" ElementStyle="{StaticResource ValueCell}" /><DataGridTextColumn Header="数据类型" Binding="{Binding TypeLabel}" Width="0.8*" MinWidth="80" /></DataGrid.Columns></DataGrid><StackPanel Style="{StaticResource EmptyWatches}" HorizontalAlignment="Center" VerticalAlignment="Center" IsHitTestVisible="False"><TextBlock Text="还没有监视地址" HorizontalAlignment="Center" FontSize="17" FontWeight="SemiBold" /><TextBlock Text="添加扫描结果、手动输入或导入地址表" Style="{StaticResource MutedText}" HorizontalAlignment="Center" Margin="0,8,0,0" /></StackPanel></Grid>
+                                <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="14,0"><TextBlock Text="当前使用绝对地址，目标进程重启后地址可能变化。" Style="{StaticResource MutedText}" FontSize="11" TextTrimming="CharacterEllipsis" /></Border>
+                            </Grid>
+                        </Border>
+                        <Border Style="{StaticResource Card}" Padding="17,13" Margin="0,12,0,0">
+                            <WrapPanel><StackPanel Margin="0,0,22,10"><TextBlock Text="写入所有选中地址" Style="{StaticResource SectionTitle}" /><TextBlock Text="输入对应类型的新值；写入会同步更新冻结值。" Style="{StaticResource MutedText}" Margin="0,5,0,0" FontSize="11" /></StackPanel><TextBox Text="{Binding EditValueText, UpdateSourceTrigger=PropertyChanged}" Width="150" FontFamily="Consolas" FontSize="14" Margin="0,0,8,0" /><Button Content="写入所选" Click="WriteFullSelected_Click" Style="{StaticResource BusyPrimaryButton}" Margin="0,0,8,0" /><Button Content="移除所选" Click="RemoveFullSelected_Click" Style="{StaticResource BusyCompactButton}" /></WrapPanel>
+                        </Border>
                     </StackPanel>
                 </ScrollViewer>
             </TabItem>
+            <TabItem Header="关于">
+                <ScrollViewer VerticalScrollBarVisibility="Auto"><StackPanel MaxWidth="820" Margin="20,24" HorizontalAlignment="Center"><Border Width="68" Height="68" CornerRadius="20" Background="{StaticResource AccentSoftBrush}" HorizontalAlignment="Left" Margin="0,0,0,22"><Path Data="M 3,4 L 3,20 M 9,8 L 9,16 M 15,2 L 15,22 M 21,7 L 21,17" Stroke="{StaticResource AccentBrush}" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stretch="Uniform" Width="33" Height="33" /></Border><TextBlock Text="让内存里的变化，更清晰。" FontSize="28" FontWeight="SemiBold" TextWrapping="Wrap" Margin="0,0,0,12" /><TextBlock Text="Memory Studio 是一个 Windows 进程内存工作台。通过扫描、逐次筛选和实时监视，找到程序中变化的数值，并观察修改后的行为。" Style="{StaticResource MutedText}" FontSize="14" TextWrapping="Wrap" LineHeight="24" Margin="0,0,0,24" /><Border Style="{StaticResource Card}" Padding="20"><StackPanel><TextBlock Text="从练习进程开始" Style="{StaticResource SectionTitle}" /><TextBlock Text="启动目标，输入其当前数值扫描，改变数值后再次筛选。多选结果后双击数值或类型列，会统一编辑整组选中的记录。" Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="22" Margin="0,9,0,16" /><Button Content="启动练习进程 ↗" Command="{Binding LaunchDemoCommand}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" /></StackPanel></Border><TextBlock Text="工具菜单提供显示缩放与字体设置、手动地址、指针和结构工具。" Style="{StaticResource MutedText}" TextWrapping="Wrap" Margin="0,22,0,0" /><TextBlock Text="C++20 扫描核心  /  C# · WPF 界面  /  Windows x64" Style="{StaticResource MutedText}" FontSize="11" Margin="0,15,0,0" /><TextBlock Text="用于你有权调试的本机程序。部分受保护进程无法连接。" Style="{StaticResource MutedText}" FontSize="11" TextWrapping="Wrap" Margin="0,7,0,0" /></StackPanel></ScrollViewer>
+            </TabItem>
         </TabControl>
-
         <Border Grid.Row="2" Grid.Column="1" Background="#0F1722" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0">
-            <Grid Margin="22,0">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <Ellipse Width="5" Height="5" Fill="{StaticResource AccentBrush}" Margin="0,0,8,0" />
-                    <TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}" FontSize="11" MaxWidth="760" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" />
-                </StackPanel>
-                <TextBlock Grid.Column="1" Text="本机 · x64" Style="{StaticResource MutedText}" FontFamily="Consolas" FontSize="10" />
-            </Grid>
+            <Grid Margin="15,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><TextBlock Text="{Binding StatusText}" Style="{StaticResource MutedText}" FontSize="11" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusText}" /><TextBlock Grid.Column="1" Text="本机 · x64" Style="{StaticResource MutedText}" FontFamily="Consolas" FontSize="10" Margin="12,0,0,0" /></Grid>
         </Border>
     </Grid>
 </Window>

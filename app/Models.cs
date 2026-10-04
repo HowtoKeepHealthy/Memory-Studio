@@ -54,6 +54,7 @@ public sealed record ProcessItem(int Id, string Name)
 }
 public sealed class ResultRow : ObservableObject
 {
+    public bool Hexadecimal { get; set; }
     private ulong _address;
     private int _type, _byteSize;
     private byte[] _rawValue = [];
@@ -78,11 +79,15 @@ public sealed class ResultRow : ObservableObject
         Set(ref _type, type, nameof(Type)); Notify(nameof(TypeLabel));
         Set(ref _byteSize, byteSize, nameof(ByteSize));
         Set(ref _rawValue, bytes, nameof(RawValue));
-        Set(ref _valueText, valueText ?? ValueCodec.Format(type, bytes), nameof(ValueText));
+        Set(ref _valueText, valueText ?? ValueCodec.Format(type, bytes, Hexadecimal), nameof(ValueText));
     }
 }
 public sealed class WatchRow : ObservableObject
 {
+    public bool Hexadecimal { get; set; }
+    public string AddressExpression { get; set; } = "";
+    public int[] PointerOffsets { get; set; } = [];
+    public bool IsPointer => PointerOffsets.Length > 0;
     private bool _isFrozen;
     private string _description = "未命名地址";
     private string _valueText = "—";
@@ -93,7 +98,7 @@ public sealed class WatchRow : ObservableObject
     public int Type { get => _type; set { if (Set(ref _type, value)) Notify(nameof(TypeLabel)); } }
     public int Size { get => _size; set { if (Set(ref _size, value)) Notify(nameof(CanFreeze)); } }
     public byte[] FrozenValue { get => _frozenValue; set { if (Set(ref _frozenValue, value)) Notify(nameof(CanFreeze)); } }
-    public string AddressText => $"0x{Address:X16}";
+    public string AddressText => (IsPointer ? "P → " : "") + $"0x{Address:X16}";
     public string TypeLabel => ValueCodec.TypeLabel(Type);
     public bool CanFreeze => Size > 0 && FrozenValue.Length == Size && ValueText != "不可读取";
     public bool IsFrozen { get => _isFrozen; set { if (value && !CanFreeze) { Notify(); return; } Set(ref _isFrozen, value); } }
@@ -101,4 +106,4 @@ public sealed class WatchRow : ObservableObject
     public string ValueText { get => _valueText; set { if (Set(ref _valueText, value)) Notify(nameof(CanFreeze)); } }
 }
 public sealed record TableFile(int Version, string ProcessName, List<TableEntry> Entries);
-public sealed record TableEntry(string Address, int Type, int Size, string Description);
+public sealed record TableEntry(string Address, int Type, int Size, string Description, string? Expression = null, int[]? Offsets = null);
