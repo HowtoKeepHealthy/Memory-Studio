@@ -32,10 +32,11 @@ public sealed class ScanSettings
 public struct ScanHistoryInfo
 {
     public uint UndoCount, MaxSteps, Type, ByteWidth;
-    private uint _hasScan, _reserved;
+    private uint _hasScan, _flags;
     public ulong UsedBytes, BudgetBytes, Generation;
     public readonly bool HasScan => _hasScan != 0;
     public readonly bool CanUndo => UndoCount > 0;
+    public readonly bool HasUnknownSnapshot => (_flags & 1) != 0;
 }
 [StructLayout(LayoutKind.Sequential)]
 internal struct NativeScanOptions

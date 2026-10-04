@@ -5,12 +5,14 @@
 #include "trace_registry.h"
 #include <algorithm>
 #include <atomic>
+#include <bit>
 #include <cmath>
 #include <deque>
 #include <cstdio>
 #include <cstring>
 #include <limits>
 #include <new>
+#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -24,14 +26,32 @@ constexpr size_t BlockSize = 1024 * 1024;
 constexpr uint32_t PatternLimit = 1024 * 1024;
 constexpr uint32_t HistorySteps = 16;
 constexpr uint64_t HistoryBudget = 64 * 1024 * 1024;
+constexpr uint64_t DenseFileLimit = 16ULL * 1024 * 1024 * 1024;
+constexpr uint64_t HistoryDiskBudget = 4ULL * 1024 * 1024 * 1024;
 thread_local char thread_error[512]{};
+
+struct DenseBlock {
+    uint64_t start = 0, first = 0, prefix = 0, data_offset = 0, mask_offset = 0;
+    uint32_t bytes = 0, slots = 0, count = 0, mask_bytes = 0;
+};
+struct DenseSnapshot {
+    HANDLE file = INVALID_HANDLE_VALUE;
+    uint64_t file_bytes = 0, count = 0;
+    uint32_t width = 0, stride = 0;
+    std::vector<DenseBlock> blocks;
+    uint64_t metadata_bytes() const noexcept { return sizeof(DenseSnapshot) + blocks.capacity() * sizeof(DenseBlock); }
+    ~DenseSnapshot() { if (file != INVALID_HANDLE_VALUE) CloseHandle(file); }
+};
 
 struct HistoryEntry {
     std::vector<uint64_t> addresses;
     std::vector<uint8_t> snapshot;
     uint32_t type = 0, width = 0;
     bool has_scan = false;
-    uint64_t bytes() const noexcept { return addresses.capacity() * sizeof(uint64_t) + snapshot.capacity(); }
+    bool unknown_origin = false;
+    std::shared_ptr<DenseSnapshot> dense;
+    uint64_t bytes() const noexcept { return addresses.capacity() * sizeof(uint64_t) + snapshot.capacity() + (dense ? dense->metadata_bytes() : 0); }
+    uint64_t disk_bytes() const noexcept { return dense ? dense->file_bytes : 0; }
 };
 struct Session {
     HANDLE process = nullptr;
@@ -47,8 +67,10 @@ struct Session {
     uint32_t previous_type = 0;
     uint32_t previous_width = 0;
     bool has_scan = false;
+    bool unknown_origin = false;
+    std::shared_ptr<DenseSnapshot> dense;
     std::deque<HistoryEntry> history;
-    uint64_t history_bytes = 0, generation = 0;
+    uint64_t history_bytes = 0, history_disk_bytes = 0, generation = 0;
     char error[512]{};
     ~Session() {
         if (write_process) CloseHandle(write_process);
@@ -274,7 +296,8 @@ int32_t validate(Session* s, const ms_scan_request& request, bool next, const ms
     if (spec.start >= spec.end || spec.start >= s->maximum)
         return fail(s, MS_INVALID, "The scan address range is empty or outside the target address space.");
     spec.limit = request.max_results ? request.max_results : ResultLimit;
-    if (spec.limit > ResultLimit) return fail(s, MS_INVALID, "The maximum supported result count is 2,000,000.");
+    if (spec.limit > ResultLimit && request.mode != MS_UNKNOWN && !(next && s->unknown_origin))
+        return fail(s, MS_INVALID, "The maximum supported result count is 2,000,000 for ordinary scans.");
     spec.writable_only = request.writable_only != 0;
     return MS_OK;
 }
@@ -315,6 +338,7 @@ struct RunningGuard {
 struct PendingResults {
     std::vector<uint64_t> addresses;
     std::vector<uint8_t> snapshot;
+    std::shared_ptr<DenseSnapshot> dense;
     int32_t add(Session* s, const ScanSpec& spec, uint64_t address, const uint8_t* value) {
         if (addresses.size() >= spec.limit)
             return fail(s, MS_LIMIT, "Result limit exceeded; narrow the range or use a more specific value. Previous results have been preserved.");
@@ -323,6 +347,54 @@ struct PendingResults {
         return MS_OK;
     }
 };
+
+int32_t create_dense(Session* s, uint32_t width, uint32_t stride, std::shared_ptr<DenseSnapshot>& result) {
+    auto pending = std::make_shared<DenseSnapshot>();
+    WCHAR directory[MAX_PATH + 1]{}, path[MAX_PATH + 1]{};
+    const DWORD length = GetTempPathW(MAX_PATH, directory);
+    if (!length || length >= MAX_PATH) return os_fail(s, "GetTempPath for unknown snapshot", length ? ERROR_FILENAME_EXCED_RANGE : GetLastError());
+    if (!GetTempFileNameW(directory, L"mss", 0, path)) return os_fail(s, "Create temporary unknown snapshot");
+    pending->file = CreateFileW(path, GENERIC_READ | GENERIC_WRITE | DELETE, FILE_SHARE_READ | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+    if (pending->file == INVALID_HANDLE_VALUE) {
+        const DWORD error = GetLastError(); DeleteFileW(path);
+        return os_fail(s, "Open temporary unknown snapshot", error);
+    }
+    pending->width = width; pending->stride = stride; result = std::move(pending); return MS_OK;
+}
+int32_t dense_read(Session* s, DenseSnapshot& snapshot, uint64_t offset, uint8_t* bytes, uint32_t size) {
+    if (!size) return MS_OK;
+    LARGE_INTEGER position{}; position.QuadPart = static_cast<LONGLONG>(offset);
+    if (!SetFilePointerEx(snapshot.file, position, nullptr, FILE_BEGIN)) return os_fail(s, "Seek unknown snapshot");
+    DWORD received = 0;
+    if (!ReadFile(snapshot.file, bytes, size, &received, nullptr)) return os_fail(s, "Read unknown snapshot");
+    if (received != size) return os_fail(s, "Read unknown snapshot", ERROR_HANDLE_EOF);
+    return MS_OK;
+}
+int32_t dense_write(Session* s, DenseSnapshot& snapshot, const uint8_t* bytes, uint32_t size) {
+    if (!size) return MS_OK;
+    LARGE_INTEGER position{}; position.QuadPart = static_cast<LONGLONG>(snapshot.file_bytes);
+    if (!SetFilePointerEx(snapshot.file, position, nullptr, FILE_BEGIN)) return os_fail(s, "Seek new unknown snapshot");
+    DWORD written = 0;
+    if (!WriteFile(snapshot.file, bytes, size, &written, nullptr)) return os_fail(s, "Write unknown snapshot");
+    if (written != size) return os_fail(s, "Write unknown snapshot", ERROR_DISK_FULL);
+    snapshot.file_bytes += written; return MS_OK;
+}
+int32_t append_dense(Session* s, DenseSnapshot& snapshot, DenseBlock block, const uint8_t* bytes, const std::vector<uint8_t>& mask) {
+    if (!block.count) return MS_OK;
+    block.mask_bytes = static_cast<uint32_t>(mask.size());
+    const uint64_t payload = uint64_t{block.bytes} + block.mask_bytes;
+    if (payload > DenseFileLimit - snapshot.file_bytes)
+        return fail(s, MS_LIMIT, "Unknown snapshot exceeds its 16 GiB file budget; narrow the address range. Previous results have been preserved.");
+    block.prefix = snapshot.count; block.data_offset = snapshot.file_bytes; block.mask_offset = block.data_offset + block.bytes;
+    snapshot.blocks.push_back(block);
+    if (snapshot.metadata_bytes() > HistoryBudget)
+        return fail(s, MS_LIMIT, "Unknown snapshot metadata exceeds 64 MiB; narrow the address range. Previous results have been preserved.");
+    int32_t status = dense_write(s, snapshot, bytes, block.bytes);
+    if (status != MS_OK) return status;
+    if ((status = dense_write(s, snapshot, mask.data(), block.mask_bytes)) != MS_OK) return status;
+    snapshot.count += block.count; return MS_OK;
+}
 
 int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>& regions, PendingResults& pending) {
     uint64_t total = 0;
@@ -345,7 +417,14 @@ int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>
             const uint64_t remainder = candidate % spec.alignment;
             if (remainder) candidate += spec.alignment - remainder;
             const uint64_t last = begin + combined.size() - spec.width;
-            for (; candidate <= last; candidate += spec.alignment) {
+            if (spec.mode == MS_UNKNOWN && candidate <= last) {
+                DenseBlock block{}; block.start = begin; block.first = candidate;
+                block.bytes = static_cast<uint32_t>(combined.size());
+                block.slots = block.count = static_cast<uint32_t>((last - candidate) / spec.alignment + 1);
+                const int32_t result = append_dense(s, *pending.dense, block, combined.data(), {});
+                if (result != MS_OK) return result;
+            }
+            for (; spec.mode != MS_UNKNOWN && candidate <= last; candidate += spec.alignment) {
                 if ((++iterations & 1023) == 0) {
                     s->progress_results.store(pending.addresses.size());
                     if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
@@ -360,7 +439,7 @@ int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>
         const size_t carry = std::min<size_t>(spec.width - 1, combined.size());
         tail.assign(combined.end() - static_cast<ptrdiff_t>(carry), combined.end());
         previous_end = address + size;
-        s->progress_results.store(pending.addresses.size());
+        s->progress_results.store(pending.dense ? pending.dense->count : pending.addresses.size());
         return MS_OK;
     };
     for (const auto& region : regions) {
@@ -409,6 +488,93 @@ int32_t initial_scan(Session* s, const ScanSpec& spec, const std::vector<Region>
             }
             address += size;
         }
+    }
+    return ensure_alive(s);
+}
+
+int32_t read_dense_current(Session* s, const DenseBlock& block, const std::vector<Region>& regions,
+    std::vector<uint8_t>& bytes, std::vector<uint8_t>& valid) {
+    const uint64_t end = block.start + block.bytes;
+    auto region = std::lower_bound(regions.begin(), regions.end(), block.start,
+        [](const Region& item, uint64_t address) { return item.end <= address; });
+    for (; region != regions.end() && region->start < end; ++region) {
+        uint64_t cursor = std::max(block.start, region->start), limit = std::min(end, region->end);
+        while (cursor < limit) {
+            if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
+            std::unique_lock<std::mutex> trace_lock(ms_trace_registry_mutex());
+            uint64_t skip_end = cursor;
+            const uint64_t read_end = ms_trace_read_end_locked(s->pid, cursor, limit, skip_end);
+            if (read_end == cursor) { cursor = skip_end; continue; }
+            const size_t offset = static_cast<size_t>(cursor - block.start), size = static_cast<size_t>(read_end - cursor);
+            SIZE_T received = 0;
+            const BOOL ok = ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(cursor), bytes.data() + offset, size, &received);
+            trace_lock.unlock();
+            if (ok && received == size) std::fill_n(valid.data() + offset, size, uint8_t{1});
+            else {
+                // Re-read page by page so one disappearing/protected page cannot
+                // discard readable neighbours or create a comparison across a hole.
+                for (uint64_t page = cursor; page < read_end;) {
+                    if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
+                    const uint64_t page_end = std::min(read_end, ((page / s->page_size) + 1) * s->page_size);
+                    const size_t page_offset = static_cast<size_t>(page - block.start), page_size = static_cast<size_t>(page_end - page);
+                    std::unique_lock<std::mutex> page_lock(ms_trace_registry_mutex());
+                    if (!ms_trace_overlaps_locked(s->pid, page, page_end)) {
+                        received = 0;
+                        ReadProcessMemory(s->process, reinterpret_cast<LPCVOID>(page), bytes.data() + page_offset, page_size, &received);
+                        if (received && received <= page_size) std::fill_n(valid.data() + page_offset, static_cast<size_t>(received), uint8_t{1});
+                    }
+                    page = page_end;
+                }
+            }
+            cursor = read_end;
+        }
+    }
+    return ensure_alive(s);
+}
+
+int32_t subsequent_dense_scan(Session* s, const ScanSpec& spec, const std::vector<Region>& regions, PendingResults& pending) {
+    const auto& previous = *s->dense;
+    s->total.store(previous.count * spec.width);
+    std::vector<uint8_t> old_bytes, current, valid, old_mask, new_mask;
+    uint64_t iterations = 0;
+    for (const auto& saved : previous.blocks) {
+        if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
+        if (ensure_alive(s) != MS_OK) return MS_OS;
+        old_bytes.resize(saved.bytes); current.assign(saved.bytes, 0); valid.assign(saved.bytes, 0);
+        old_mask.resize(saved.mask_bytes); new_mask.assign((saved.slots + 7) / 8, 0);
+        int32_t status = dense_read(s, *s->dense, saved.data_offset, old_bytes.data(), saved.bytes);
+        if (status != MS_OK) return status;
+        if ((status = dense_read(s, *s->dense, saved.mask_offset, old_mask.data(), saved.mask_bytes)) != MS_OK) return status;
+        if ((status = read_dense_current(s, saved, regions, current, valid)) != MS_OK) return status;
+        uint32_t kept = 0;
+        for (uint32_t word = 0; word < saved.slots; word += 64) {
+            uint64_t bits = UINT64_MAX;
+            if (saved.mask_bytes) {
+                bits = 0; const size_t at = word / 8;
+                std::memcpy(&bits, old_mask.data() + at, std::min<size_t>(8, old_mask.size() - at));
+            }
+            if (saved.slots - word < 64) bits &= (uint64_t{1} << (saved.slots - word)) - 1;
+            while (bits) {
+                const uint32_t slot = word + std::countr_zero(bits); bits &= bits - 1;
+                if ((++iterations & 1023) == 0) {
+                    s->progress_results.store(pending.dense->count + kept);
+                    if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
+                }
+                const uint64_t address = saved.first + uint64_t{slot} * previous.stride;
+                if (address % spec.alignment) continue;
+                const size_t at = static_cast<size_t>(address - saved.start);
+                bool readable_value = true;
+                for (uint32_t byte = 0; byte < spec.width; ++byte) if (!valid[at + byte]) { readable_value = false; break; }
+                if (readable_value && matches(spec, current.data() + at, old_bytes.data() + at)) {
+                    new_mask[slot / 8] |= static_cast<uint8_t>(1u << (slot % 8)); ++kept;
+                }
+            }
+        }
+        DenseBlock block = saved; block.count = kept;
+        if (kept == saved.slots) new_mask.clear(); // The common unchanged case needs no bitmap file payload.
+        if ((status = append_dense(s, *pending.dense, block, current.data(), new_mask)) != MS_OK) return status;
+        s->scanned.fetch_add(uint64_t{saved.count} * spec.width);
+        s->progress_results.store(pending.dense->count);
     }
     return ensure_alive(s);
 }
@@ -520,29 +686,40 @@ MS_API int32_t ms_scan_ex(void* opaque, const ms_scan_request* request, uint32_t
         std::vector<Region> regions;
         if ((status = regions_for(s, spec, regions)) != MS_OK) return status;
         PendingResults pending;
-        status = next_scan ? subsequent_scan(s, spec, regions, pending) : initial_scan(s, spec, regions, pending);
+        const bool dense_origin = request->mode == MS_UNKNOWN || (next_scan && s->unknown_origin);
+        if (dense_origin) {
+            status = create_dense(s, spec.width, next_scan ? s->dense->stride : spec.alignment, pending.dense);
+            if (status != MS_OK) return status;
+        }
+        status = next_scan ? (dense_origin ? subsequent_dense_scan(s, spec, regions, pending) : subsequent_scan(s, spec, regions, pending))
+            : initial_scan(s, spec, regions, pending);
         if (status != MS_OK) return status;
         if (cancelled(s)) return fail(s, MS_CANCELLED, "Scan cancelled; previous results have been preserved.");
-        const uint64_t previous_bytes = s->addresses.capacity() * sizeof(uint64_t) + s->snapshot.capacity();
+        const uint64_t previous_bytes = s->addresses.capacity() * sizeof(uint64_t) + s->snapshot.capacity() + (s->dense ? s->dense->metadata_bytes() : 0);
         if (previous_bytes <= HistoryBudget) {
             // Allocate the history node before mutating the live scan. Vector swaps
             // and subsequent eviction cannot throw: cancellation/failure stays transactional.
             s->history.emplace_back();
             auto& entry = s->history.back();
             entry.type = s->previous_type; entry.width = s->previous_width; entry.has_scan = s->has_scan;
+            entry.unknown_origin = s->unknown_origin;
             entry.addresses.swap(s->addresses); entry.snapshot.swap(s->snapshot);
+            entry.dense.swap(s->dense);
             s->history_bytes += entry.bytes();
-            while (s->history.size() > HistorySteps || s->history_bytes > HistoryBudget) {
-                s->history_bytes -= s->history.front().bytes(); s->history.pop_front();
+            s->history_disk_bytes += entry.disk_bytes();
+            while (s->history.size() > HistorySteps || s->history_bytes > HistoryBudget ||
+                (s->history_disk_bytes > HistoryDiskBudget && s->history.size() > 1)) {
+                s->history_bytes -= s->history.front().bytes(); s->history_disk_bytes -= s->history.front().disk_bytes(); s->history.pop_front();
             }
-        } else { s->history.clear(); s->history_bytes = 0; }
+        } else { s->history.clear(); s->history_bytes = 0; s->history_disk_bytes = 0; }
         s->addresses.swap(pending.addresses);
         s->snapshot.swap(pending.snapshot);
+        s->dense.swap(pending.dense); s->unknown_origin = dense_origin;
         s->previous_type = spec.type;
         s->previous_width = spec.width;
         s->has_scan = true;
         ++s->generation;
-        s->progress_results.store(s->addresses.size());
+        s->progress_results.store(s->dense ? s->dense->count : s->addresses.size());
         clear_error(s);
         return MS_OK;
     } catch (const std::bad_alloc&) { return fail(s, MS_OS, "Not enough memory for the scan. Previous results have been preserved."); }
@@ -559,10 +736,12 @@ MS_API int32_t ms_undo_scan(void* opaque) {
         if (s->history.empty()) return fail(s, MS_INVALID, "No retained scan history is available to undo.");
         auto& entry = s->history.back();
         s->history_bytes -= entry.bytes();
+        s->history_disk_bytes -= entry.disk_bytes();
         s->addresses.swap(entry.addresses); s->snapshot.swap(entry.snapshot);
+        s->dense.swap(entry.dense); s->unknown_origin = entry.unknown_origin;
         s->previous_type = entry.type; s->previous_width = entry.width; s->has_scan = entry.has_scan;
         s->history.pop_back(); ++s->generation;
-        s->progress_results.store(s->addresses.size());
+        s->progress_results.store(s->dense ? s->dense->count : s->addresses.size());
         clear_error(s); return MS_OK;
     } catch (...) { return fail(s, MS_OS, "Unexpected error while restoring scan history."); }
 }
@@ -572,6 +751,7 @@ MS_API void ms_get_scan_history(void* opaque, ms_scan_history_info* info) {
         *info = {}; auto* s = static_cast<Session*>(opaque); if (!s) return;
         info->undo_count = static_cast<uint32_t>(s->history.size()); info->max_steps = HistorySteps;
         info->type = s->previous_type; info->byte_width = s->previous_width; info->has_scan = s->has_scan;
+        info->reserved = s->unknown_origin ? 1u : 0u;
         info->used_bytes = s->history_bytes; info->budget_bytes = HistoryBudget; info->generation = s->generation;
     } catch (...) { if (info) *info = {}; }
 }
@@ -600,13 +780,44 @@ MS_API void ms_get_progress(void* opaque, ms_progress* progress) {
 }
 MS_API uint64_t ms_result_count(void* opaque) {
     auto* s = static_cast<Session*>(opaque);
-    try { return s ? s->addresses.size() : 0; }
+    try { return s ? (s->dense ? s->dense->count : s->addresses.size()) : 0; }
     catch (...) { fail(s, MS_OS, "Unexpected native result error."); return 0; }
 }
 MS_API uint32_t ms_get_results(void* opaque, uint64_t offset, uint64_t* addresses, uint32_t capacity) {
     auto* s = static_cast<Session*>(opaque);
     try {
         if (!s || (!addresses && capacity)) { fail(s, MS_INVALID, "A session and result buffer are required."); return 0; }
+        if (s->dense) {
+            const auto& dense = *s->dense;
+            if (offset >= dense.count || !capacity) return 0;
+            uint32_t copied = 0;
+            auto block = std::lower_bound(dense.blocks.begin(), dense.blocks.end(), offset,
+                [](const DenseBlock& item, uint64_t index) { return item.prefix + item.count <= index; });
+            std::vector<uint8_t> mask;
+            uint64_t skip = offset - block->prefix;
+            for (; block != dense.blocks.end() && copied < capacity; ++block, skip = 0) {
+                if (!block->mask_bytes) {
+                    const uint32_t take = static_cast<uint32_t>(std::min<uint64_t>(capacity - copied, block->count - skip));
+                    for (uint32_t index = 0; index < take; ++index)
+                        addresses[copied++] = block->first + (skip + index) * dense.stride;
+                    continue;
+                }
+                mask.resize(block->mask_bytes);
+                if (dense_read(s, *s->dense, block->mask_offset, mask.data(), block->mask_bytes) != MS_OK) return 0;
+                for (uint32_t word = 0; word < block->slots && copied < capacity; word += 64) {
+                    uint64_t bits = 0; const size_t at = word / 8;
+                    std::memcpy(&bits, mask.data() + at, std::min<size_t>(8, mask.size() - at));
+                    const uint32_t hits = std::popcount(bits);
+                    if (skip >= hits) { skip -= hits; continue; }
+                    while (skip) { bits &= bits - 1; --skip; }
+                    while (bits && copied < capacity) {
+                        const uint32_t slot = word + std::countr_zero(bits); bits &= bits - 1;
+                        addresses[copied++] = block->first + uint64_t{slot} * dense.stride;
+                    }
+                }
+            }
+            return copied;
+        }
         if (offset >= s->addresses.size() || !capacity) return 0;
         const auto count = static_cast<uint32_t>(std::min<uint64_t>(capacity, s->addresses.size() - offset));
         std::copy_n(s->addresses.data() + static_cast<size_t>(offset), count, addresses);

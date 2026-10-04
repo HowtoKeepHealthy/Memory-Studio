@@ -21,9 +21,10 @@ typedef struct ms_scan_request {
     const uint8_t* value;
     uint32_t value_size;
     uint32_t alignment;    // 1 or scalar width.
-    uint64_t max_results;  // Zero means 2,000,000. Exceeding the limit fails transactionally.
+    uint64_t max_results;  // Ordinary scans: zero means 2,000,000; exceeding fails transactionally.
+                          // Unknown initial snapshots and all their subsequent filters ignore this candidate limit.
     uint32_t writable_only;
-    uint32_t reserved;
+    uint32_t reserved; // Must be zero.
 } ms_scan_request;
 typedef enum ms_scan_flags { MS_APPROXIMATE=1 } ms_scan_flags;
 typedef struct ms_scan_options {
@@ -44,7 +45,7 @@ typedef struct ms_scan_history_info {
     uint32_t type;
     uint32_t byte_width;
     uint32_t has_scan;
-    uint32_t reserved;
+    uint32_t reserved; // Output flags: bit 0 = unknown-initial-value origin (file-backed snapshot); other bits zero.
     uint64_t used_bytes;
     uint64_t budget_bytes;
     uint64_t generation;
@@ -64,7 +65,12 @@ MS_API int32_t ms_scan_ex(void* session, const ms_scan_request* request, uint32_
 // Approximate equality: finite abs(a-b) <= max(abs_tol, rel_tol*max(abs(a),abs(b))).
 // Applies to EXACT/CHANGED/UNCHANGED and specified-delta modes; ordered comparisons stay strict.
 // INCREASED_BY/DECREASED_BY compare to the previous successful snapshot; delta must be nonnegative.
-// Historical candidates AND snapshots are retained up to 16 steps/64 MiB (allocated payload).
+// Historical candidates AND snapshots are retained up to 16 steps/64 MiB of metadata/vector RAM.
+// Unknown-origin scans use 1 MiB raw chunks plus at most width-1 boundary bytes and candidate bitmaps
+// in delete-on-close temporary files. Each file is limited to 16 GiB, each snapshot's metadata to 64 MiB.
+// History metadata/vector RAM is limited to 64 MiB. History files have a 4 GiB soft budget,
+// retaining at least the latest undo snapshot even when that single file exceeds 4 GiB.
+// used_bytes reports retained metadata/vector RAM; file payload is excluded from that field.
 // Undo can restore the no-scan state; oldest entries are evicted to fit budget. No redo.
 // Failure/cancellation changes neither current scan nor history; ms_scan also records history.
 MS_API int32_t ms_undo_scan(void* session);

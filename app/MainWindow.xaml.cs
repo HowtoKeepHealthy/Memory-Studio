@@ -32,6 +32,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         SourceInitialized += (_, _) => WindowAppearance.ApplyDarkTitleBar(this);
         _pickerTimer.Tick += (_, _) => UpdatePickerTarget();
+        PreviewMouseLeftButtonDown += MainWindow_PreviewMouseLeftButtonDown;
         Loaded += (_, _) => { UpdateResponsiveLayout(); QueueVisibleResults(); };
         Closing += MainWindow_Closing;
         AppearanceSettings.Changed += AppearanceSettings_Changed;
@@ -68,7 +69,7 @@ public partial class MainWindow : Window
         {
             double width = MainShell.ActualWidth;
             bool compact = width < 1100;
-            if (_compactLayout != compact) { _compactLayout = compact; _settingsExpanded = !compact; }
+            if (_compactLayout != compact) { _compactLayout = compact; _settingsExpanded = true; }
             bool iconNavigation = width < 600 || MainShell.ActualHeight < 410;
             RailColumn.Width = new GridLength(compact ? iconNavigation ? 52 : AppearanceSettings.Current.FontSize > 16 ? 76 : 64 : 82);
             NavScanLabel.Visibility = NavWatchLabel.Visibility = NavAboutLabel.Visibility = iconNavigation ? Visibility.Collapsed : Visibility.Visible;
@@ -88,19 +89,16 @@ public partial class MainWindow : Window
             ProcessBadgeText.MaxWidth = compact ? width < 600 ? 45 : 130 : 280;
             PracticeButton.Content = width < 600 ? "练习 ↗" : "启动练习 ↗";
             WorkspaceTabs.Margin = compact ? new Thickness(12, 12, 12, 8) : new Thickness(16, 14, 16, 10);
-            ScanSettingsColumn.Width = new GridLength(compact ? 0 : 286);
-            ScanGapColumn.Width = new GridLength(compact ? 0 : 14);
-            Grid.SetColumn(ScanSettingsCard, compact ? 0 : 2);
-            Grid.SetColumnSpan(ScanSettingsCard, compact ? 3 : 1);
-            Grid.SetRow(ResultsCard, compact ? 2 : 0);
-            Grid.SetColumnSpan(ResultsCard, compact ? 3 : 1);
-            ScanLayoutGapRow.Height = new GridLength(compact ? 12 : 0);
-            ScanLayoutLastRow.Height = compact ? GridLength.Auto : new GridLength(0);
+            ScanSettingsColumn.Width = new GridLength(compact ? 230 : 260);
+            ScanGapColumn.Width = new GridLength(14);
+            // Keep search beside the results at every display scale. A bounded page width preserves grid virtualization.
+            double pageWidth = Math.Max(700, width - RailColumn.Width.Value - WorkspaceTabs.Margin.Left - WorkspaceTabs.Margin.Right - 12);
+            ScanPageLayout.Width = pageWidth;
             double bodyHeight = Math.Max(150, MainShell.ActualHeight - MainHeaderRow.ActualHeight - 58);
             CompactWatchCard.Height = Math.Max(200, 200 * AppearanceSettings.Current.FontSize / 13);
-            ResultsCard.Height = compact ? Math.Clamp(bodyHeight * 0.66, 245, 350) : Math.Max(280, bodyHeight - CompactWatchCard.Height - 60);
+            ResultsCard.Height = Math.Max(300, bodyHeight - CompactWatchCard.Height - 60);
             ScanSettingsFields.Visibility = _settingsExpanded ? Visibility.Visible : Visibility.Collapsed;
-            ScanSettingsCard.Height = _settingsExpanded ? compact ? 360 : ResultsCard.Height : double.NaN;
+            ScanSettingsCard.Height = _settingsExpanded ? ResultsCard.Height : double.NaN;
             ScanSettingsToggle.Content = _settingsExpanded ? "扫描设置  ▴" : "扫描设置  ▾";
             FullWatchCard.Height = Math.Max(220, bodyHeight - 165);
             QueueVisibleResults();
@@ -280,23 +278,60 @@ public partial class MainWindow : Window
         AboutNavigation.IsChecked = index == 2;
     }
 
+    private void MainWindow_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_picking || Keyboard.Modifiers != ModifierKeys.None || e.OriginalSource is not DependencyObject source) return;
+        var grid = FindAncestor<DataGrid>(source);
+        if (grid is not null)
+        {
+            if (FindAncestor<DataGridRow>(source)?.Item is ResultRow or WatchRow || HasInteractiveAncestor(source, grid)) return;
+            grid.UnselectAll();
+            return;
+        }
+        // Inputs, operation buttons, headers, and scrollbars must leave the group available for a subsequent action.
+        if (HasInteractiveAncestor(source, this)) return;
+        ResultGrid.UnselectAll();
+        CompactWatchGrid.UnselectAll();
+        FullWatchGrid.UnselectAll();
+    }
+
+    private static bool HasInteractiveAncestor(DependencyObject source, DependencyObject boundary)
+    {
+        for (DependencyObject? current = source; current is not null && !ReferenceEquals(current, boundary); current = ParentOf(current))
+            if (current is ButtonBase or TextBoxBase or PasswordBox or ComboBox or ComboBoxItem or Slider or ScrollBar or Thumb or MenuItem or System.Windows.Controls.ContextMenu or DataGridColumnHeader or DataGridRowHeader or System.Windows.Documents.Hyperlink)
+                return true;
+        return false;
+    }
+
     private async void RecordGrid_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not DataGrid grid || DataContext is not MainViewModel vm) return;
-        var cell = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject);
-        var row = FindAncestor<DataGridRow>(cell);
-        if (cell is null || row?.Item is not (ResultRow or WatchRow)) return;
+        var source = e.OriginalSource as DependencyObject;
+        var cell = FindAncestor<DataGridCell>(source);
+        var row = FindAncestor<DataGridRow>(source);
+        if (row?.Item is not (ResultRow or WatchRow)) return;
+        if (e.ClickCount == 1 && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            bool currentFocus = ReferenceEquals(grid.CurrentCell.Item, row.Item);
+            if (cell is not null && cell.Column.Header?.ToString() != "冻结" && currentFocus && grid.SelectedItems.Count > 1 && grid.SelectedItems.Contains(row.Item))
+            {
+                e.Handled = true;
+                grid.Focus();
+                return;
+            }
+            if (!currentFocus || !grid.SelectedItems.Contains(row.Item))
+            {
+                grid.SelectedItems.Clear();
+                grid.SelectedItem = row.Item;
+                var column = cell?.Column ?? grid.CurrentCell.Column ?? grid.Columns.FirstOrDefault();
+                if (column is not null) grid.CurrentCell = new DataGridCellInfo(row.Item, column);
+            }
+        }
+        if (cell is null) return;
         bool freeze = cell.Column.Header?.ToString() == "冻结";
         string? action = freeze ? "edit-value" : ColumnEditAction(cell.Column);
         if (action is null) return;
-        // Protect the group on the first click, before DataGrid reduces selection on an unmodified click.
-        if (e.ClickCount == 1 && !freeze && Keyboard.Modifiers == ModifierKeys.None && grid.SelectedItems.Count > 1 && grid.SelectedItems.Contains(row.Item))
-        {
-            e.Handled = true;
-            grid.Focus();
-            return;
-        }
-        if (e.ClickCount != 2) return;
+        if (e.ClickCount != 2 || Keyboard.Modifiers != ModifierKeys.None) return;
         // Freeze checkboxes toggle once on the first click. The second click edits the selected group's value.
         e.Handled = true;
         if (!grid.SelectedItems.Contains(row.Item)) { grid.SelectedItems.Clear(); grid.SelectedItem = row.Item; }
@@ -341,6 +376,8 @@ public partial class MainWindow : Window
             grid.SelectedItems.Clear();
             grid.SelectedItem = row.Item;
         }
+        var column = FindAncestor<DataGridCell>(e.OriginalSource as DependencyObject)?.Column ?? grid.CurrentCell.Column ?? grid.Columns.FirstOrDefault();
+        if (column is not null) grid.CurrentCell = new DataGridCellInfo(row.Item, column);
         object[] records = grid.SelectedItems.Cast<object>().Where(item => item is ResultRow or WatchRow).ToArray();
         if (records.Length == 0) return;
         var menu = BuildRecordMenu(grid, records, vm.IsBusy);
@@ -501,12 +538,13 @@ public partial class MainWindow : Window
         for (var current = source; current is not null;)
         {
             if (current is T ancestor) return ancestor;
-            current = current is Visual or System.Windows.Media.Media3D.Visual3D
-                ? VisualTreeHelper.GetParent(current)
-                : LogicalTreeHelper.GetParent(current);
+            current = ParentOf(current);
         }
         return null;
     }
+
+    private static DependencyObject? ParentOf(DependencyObject source) => source is Visual or System.Windows.Media.Media3D.Visual3D
+        ? VisualTreeHelper.GetParent(source) : LogicalTreeHelper.GetParent(source);
 }
 
 internal static class WindowAppearance

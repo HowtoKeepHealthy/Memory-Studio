@@ -1,9 +1,11 @@
 ﻿param(
     [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
     [string]$NativeDllPath = '',
-    [switch]$HistoryOverlapOnly
+    [switch]$HistoryOverlapOnly,
+    [switch]$ScrollOnly
 )
 $ErrorActionPreference = 'Stop'
+if ($HistoryOverlapOnly -and $ScrollOnly) { throw '请选择一个独立专项。' }
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $dotnet = Join-Path $repoRoot '.tools\dotnet\dotnet.exe'
 if (-not (Test-Path -LiteralPath $dotnet)) { throw '未找到本地 .NET SDK。请先运行 build.cmd。' }
@@ -43,6 +45,7 @@ try {
     }
     $testArguments = @($repoRoot, $runRoot)
     if ($HistoryOverlapOnly) { $testArguments += '--history-overlap-only'; Write-Host '只运行内存撤销重叠/部分失败专项；不会打开窗口。' }
+    elseif ($ScrollOnly) { $testArguments += '--scroll-only'; Write-Host '只运行真实原生滚轮专项；短暂显示主窗和浏览器，结束后恢复鼠标位置。' }
     else { Write-Host '运行独立 WPF 真窗口集成：将短暂显示浏览器和主窗口。' }
     & $dotnet run --project (Join-Path $harnessCopy 'BrowserWindows.csproj') --configuration $Configuration `
         "-p:RepositoryRoot=$repoRoot" "-p:AppSourcePath=$appCopy" "-p:NativeDllPath=$NativeDllPath" -- @testArguments

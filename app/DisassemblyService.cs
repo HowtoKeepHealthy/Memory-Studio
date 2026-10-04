@@ -25,20 +25,43 @@ public static class DisassemblyService
     public static DisassemblyReadResult ReadBefore(NativeEngine engine, ulong endAddress, int bitness,
         int byteCount = 512, ulong? knownAnchor = null)
     {
+        ArgumentNullException.ThrowIfNull(engine);
+        if (bitness is not (32 or 64)) throw new ArgumentOutOfRangeException(nameof(bitness));
+        if (bitness == 32 && endAddress > 0x1_0000_0000UL) throw new ArgumentException("32 位指令地址不能超过 0xFFFFFFFF。");
         if (byteCount is < 1 or > 65536) throw new ArgumentOutOfRangeException(nameof(byteCount));
         if (endAddress == 0) return new(0, 0, [], 0, 0, "已到达地址空间起点。");
         ulong start = endAddress > (ulong)byteCount ? endAddress - (ulong)byteCount : 0;
         bool anchored = knownAnchor is ulong anchor && anchor < endAddress && endAddress - anchor <= 65536;
         if (anchored) start = knownAnchor!.Value;
-        int size = checked((int)(endAddress - start));
-        var read = ReadWindow(engine, start, bitness, size);
-        byte[] bytes = read.Rows.SelectMany(row => row.Bytes).Take(size).ToArray();
-        if (bytes.Length != size)
-            throw new InvalidOperationException(read.BoundaryMessage ?? "前方存在不可读边界，无法连续加载到当前指令。");
-        var rows = DecodeBefore(bytes, start, endAddress, bitness, anchored);
-        return new(rows.Count > 0 ? rows[0].Address : endAddress, endAddress, rows, bytes.Length, size,
-            anchored && rows.All(r => !r.IsBoundaryUncertain) ? read.BoundaryMessage :
-            "反向区域的指令边界未确定：已尝试对齐至当前起点，可能是数据或另一种合法拆分。请选择已知入口/指令起点确认；黄色行不能直接作为可靠补丁边界。");
+        int requested = checked((int)(endAddress - start));
+        // Read backward, one page at a time. An inaccessible earlier page must not
+        // hide the readable suffix immediately before IP (e.g. IP is pageStart+64).
+        // Never skip an unreadable gap or concatenate bytes across it.
+        var chunks = new List<byte[]>();
+        ulong cursor = endAddress;
+        string? boundary = null;
+        while (cursor > start)
+        {
+            ulong pageStart = ((cursor - 1) / (ulong)Environment.SystemPageSize) * (ulong)Environment.SystemPageSize;
+            ulong chunkStart = Math.Max(start, pageStart);
+            int size = checked((int)(cursor - chunkStart));
+            try { chunks.Add(engine.Read(chunkStart, size)); cursor = chunkStart; }
+            catch (ObjectDisposedException) { throw; }
+            catch (InvalidOperationException ex)
+            {
+                boundary = $"在 0x{cursor:X16} 到达前方不可读边界：{ex.Message}";
+                break;
+            }
+        }
+        if (chunks.Count == 0) throw new InvalidOperationException(boundary ?? "当前指令前方没有连续可读字节。");
+        chunks.Reverse();
+        byte[] bytes = chunks.SelectMany(chunk => chunk).ToArray();
+        bool reliable = anchored && cursor == start;
+        var rows = DecodeBefore(bytes, cursor, endAddress, bitness, reliable);
+        string? note = reliable && rows.All(r => !r.IsBoundaryUncertain) ? boundary :
+            "反向区域的指令边界未确定：已尝试对齐至当前起点，可能是数据或另一种合法拆分。请选择已知入口/指令起点确认；黄色行不能直接作为可靠补丁边界。";
+        if (boundary != null && note != boundary) note = boundary + " " + note;
+        return new(cursor, endAddress, rows, bytes.Length, requested, note);
     }
 
     public static IReadOnlyList<DisassemblyRow> DecodeBefore(byte[] bytes, ulong startAddress,

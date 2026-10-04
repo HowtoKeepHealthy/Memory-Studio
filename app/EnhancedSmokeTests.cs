@@ -14,9 +14,9 @@ internal static class EnhancedSmokeTests
         {
             Marshal.Copy(new byte[4096], 0, block, 4096);
             Marshal.WriteInt32(block, 16, 400); Marshal.WriteInt32(block, 20, 450);
-            vm = new MainViewModel { StartAddress = $"0x{block + 16:X}", EndAddress = $"0x{block + 24:X}" };
+            vm = new MainViewModel { StartAddress = $"0x{block + 16:X}", EndAddress = $"0x{block + 23:X}" };
             await vm.AttachToProcessAsync(Environment.ProcessId);
-            check(vm.EndAddress == $"0x{block + 24:X}", "Attach preserves a user-specified scan boundary");
+            check(vm.EndAddress == $"0x{block + 23:X}", "Attach preserves a user-specified scan boundary");
             vm.SelectedScanMode = vm.ScanModes.Single(m => m.Value == 6); vm.SearchValue = "425";
             await vm.ScanAsync(false);
             check(vm.Results.Count == 1 && vm.Results[0].Address == (ulong)block + 20, "Greater-than first scan works through ViewModel");
@@ -59,7 +59,7 @@ internal static class EnhancedSmokeTests
             vm.HexDisplayEnabled = false;
             check(vm.SearchValue == "470" && vm.SearchUpperValue == "600", "Decimal conversion preserves existing values");
             Marshal.Copy(BitConverter.GetBytes(1.2345678f), 0, block + 64, 4);
-            vm.StartAddress = $"0x{block + 64:X}"; vm.EndAddress = $"0x{block + 68:X}"; vm.SelectedType = vm.TypeOptions.Single(t => t.Value == 4);
+            vm.StartAddress = $"0x{block + 64:X}"; vm.EndAddress = $"0x{block + 67:X}"; vm.SelectedType = vm.TypeOptions.Single(t => t.Value == 4);
             vm.SearchValue = "1.234"; vm.SelectedScanMode = vm.ScanModes[0]; await vm.ScanAsync(false);
             check(vm.Results.Count == 1, "Float exact scan defaults to tolerance around the entered value");
             vm.FloatToleranceEnabled = false; await vm.ScanAsync(false); check(vm.Results.Count == 0, "Float tolerance can be disabled for exact bitwise-value comparisons");

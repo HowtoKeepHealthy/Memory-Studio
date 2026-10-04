@@ -25,6 +25,8 @@ public partial class DisassemblyWindow : Window
     private ulong _focusAddress;
     private int _loadedBitness;
     private bool _constructing = true, _loading, _closed, _ready, _suppressScroll, _beforeBlocked, _afterBlocked;
+    private bool _wheelLoading;
+    private double _queuedWheelMovement;
 
     public DisassemblyWindow(NativeEngine engine, int processId, ulong? initialAddress = null, ulong? relatedAddress = null, bool ownsEngine = false)
     {
@@ -135,9 +137,9 @@ public partial class DisassemblyWindow : Window
         catch (Exception ex) { if (!_closed) StatusLabel.Text = "读取未完成：" + ex.Message; }
         finally { _loading = false; _suppressScroll = false; if (!_closed) SetInputEnabled(true); }
     }
-    public async Task LoadAdjacentAsync(bool before)
+    public async Task LoadAdjacentAsync(bool before, bool retryBlocked = false)
     {
-        if (_loading || _closed || _rows.Count == 0 || (before ? _beforeBlocked : _afterBlocked)) return;
+        if (_loading || _closed || _rows.Count == 0 || !retryBlocked && (before ? _beforeBlocked : _afterBlocked)) return;
         _loading = true; _suppressScroll = true; SetInputEnabled(false);
         double offset = _scroll?.VerticalOffset ?? 0;
         object? selected = InstructionGrid.SelectedItem;
@@ -170,7 +172,10 @@ public partial class DisassemblyWindow : Window
             if (selected is DisassemblyRow chosen && _rows.Contains(chosen)) InstructionGrid.SelectedItem = chosen;
             await Dispatcher.InvokeAsync(() =>
             {
-                InstructionGrid.UpdateLayout(); _scroll?.ScrollToVerticalOffset(Math.Max(0, offset + inserted - removedTop));
+                InstructionGrid.UpdateLayout();
+                // Loading preserves the anchor, then consumes the wheel gesture itself.
+                // Otherwise a wheel at offset zero only loads data and visibly does nothing.
+                _scroll?.ScrollToVerticalOffset(Math.Max(0, offset + inserted - removedTop - (_wheelLoading ? _queuedWheelMovement : 0)));
             }, DispatcherPriority.Loaded);
             UpdateRange(); StatusLabel.Text = read.BoundaryMessage ?? $"已连续加载 {read.Rows.Count:N0} 条指令。选中项及滚动位置已保留。";
         }
@@ -179,6 +184,7 @@ public partial class DisassemblyWindow : Window
         {
             if (before) _beforeBlocked = true; else _afterBlocked = true;
             if (!_closed) StatusLabel.Text = "已到达无法连续读取的边界：" + ex.Message + "。刷新或跳转可重试。";
+            if (_wheelLoading) _scroll?.ScrollToVerticalOffset(Math.Max(0, offset - _queuedWheelMovement));
         }
         finally { _loading = false; _suppressScroll = false; if (!_closed) SetInputEnabled(true); }
     }
@@ -197,9 +203,24 @@ public partial class DisassemblyWindow : Window
     }
     private async void InstructionGrid_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (_scroll == null || _loading) return;
-        if (e.Delta > 0 && _scroll.VerticalOffset <= 2) await LoadAdjacentAsync(true);
-        else if (e.Delta < 0 && _scroll.VerticalOffset + _scroll.ViewportHeight >= _scroll.ExtentHeight - 2) await LoadAdjacentAsync(false);
+        if (_scroll == null || _closed) return;
+        double lines = SystemParameters.WheelScrollLines;
+        if (lines < 0) lines = Math.Max(1, _scroll.ViewportHeight - 1);
+        if (lines == 0) return;
+        double movement = e.Delta / 120.0 * lines;
+        if (_loading)
+        {
+            if (_wheelLoading) { _queuedWheelMovement += movement; e.Handled = true; }
+            return;
+        }
+        bool before = movement > 0;
+        double predicted = _scroll.VerticalOffset - movement;
+        bool edge = before ? predicted <= 2 : predicted + _scroll.ViewportHeight >= _scroll.ExtentHeight - 2;
+        if (!edge) return;
+        e.Handled = true;
+        _wheelLoading = true; _queuedWheelMovement = movement;
+        try { await LoadAdjacentAsync(before, retryBlocked: true); }
+        finally { _wheelLoading = false; _queuedWheelMovement = 0; }
     }
     private static T? FindChild<T>(DependencyObject parent) where T : DependencyObject
     {
@@ -225,7 +246,7 @@ public partial class DisassemblyWindow : Window
         GoButton.IsEnabled = enabled && _ready;
         EntryButton.IsEnabled = enabled && (ModuleCombo.SelectedItem as ProcessModuleInfo)?.EntryPoint != null;
         BaseButton.IsEnabled = enabled && ModuleCombo.SelectedItem != null;
-        PreviousButton.IsEnabled = enabled && _rows.Count > 0 && !_beforeBlocked;
+        PreviousButton.IsEnabled = enabled && _rows.Count > 0 && _rows[0].Address > 0;
         NextButton.IsEnabled = enabled && _rows.Count > 0 && !_afterBlocked;
         BackButton.IsEnabled = enabled && _history.Count > 0;
         CopyButton.IsEnabled = DataButton.IsEnabled = enabled && _rows.Count > 0;
@@ -248,7 +269,7 @@ public partial class DisassemblyWindow : Window
     private async void ModulesButton_Click(object sender, RoutedEventArgs e) => await RefreshModulesAsync();
     private async void EntryButton_Click(object sender, RoutedEventArgs e) { if ((ModuleCombo.SelectedItem as ProcessModuleInfo)?.EntryPoint is ulong entry) await NavigateAsync(entry); }
     private async void BaseButton_Click(object sender, RoutedEventArgs e) { if (ModuleCombo.SelectedItem is ProcessModuleInfo module) await NavigateAsync(module.BaseAddress); }
-    private async void PreviousButton_Click(object sender, RoutedEventArgs e) => await LoadAdjacentAsync(true);
+    private async void PreviousButton_Click(object sender, RoutedEventArgs e) => await LoadAdjacentAsync(true, retryBlocked: true);
     private async void NextButton_Click(object sender, RoutedEventArgs e) => await LoadAdjacentAsync(false);
     private async Task BackAsync()
     {

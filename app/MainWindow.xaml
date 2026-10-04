@@ -118,8 +118,9 @@
         </Border>
         <TabControl x:Name="WorkspaceTabs" Grid.Row="1" Grid.Column="1" Margin="16,14,16,10" SelectedIndex="0">
             <TabItem Header="扫描">
-                <ScrollViewer x:Name="ScanPageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" ScrollChanged="ResultGrid_ScrollChanged">
-                    <Grid>
+                <ScrollViewer x:Name="ScanPageScroll" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" ScrollChanged="ResultGrid_ScrollChanged">
+                    <ScrollViewer.Resources><SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#0B1018" /></ScrollViewer.Resources>
+                    <Grid x:Name="ScanPageLayout" MinWidth="700">
                         <Grid.RowDefinitions><RowDefinition Height="48" /><RowDefinition Height="Auto" /><RowDefinition Height="12" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                         <Grid Grid.Row="0" Margin="2,0,2,12">
                             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
@@ -127,9 +128,9 @@
                             <Button x:Name="PracticeButton" Grid.Column="1" Command="{Binding LaunchDemoCommand}" Style="{StaticResource GhostButton}" Content="启动练习 ↗" FontSize="11" Padding="7,6" ToolTip="启动内置练习进程" />
                         </Grid>
                         <Grid Grid.Row="1" x:Name="ScanLayout">
-                            <Grid.RowDefinitions><RowDefinition x:Name="ScanLayoutFirstRow" Height="Auto" /><RowDefinition x:Name="ScanLayoutGapRow" Height="0" /><RowDefinition x:Name="ScanLayoutLastRow" Height="0" /></Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition x:Name="ScanGapColumn" Width="14" /><ColumnDefinition x:Name="ScanSettingsColumn" Width="286" /></Grid.ColumnDefinitions>
-                            <Border x:Name="ResultsCard" Style="{StaticResource Card}" Height="370">
+                            <Grid.RowDefinitions><RowDefinition Height="Auto" /></Grid.RowDefinitions>
+                            <Grid.ColumnDefinitions><ColumnDefinition x:Name="ScanSettingsColumn" Width="260" /><ColumnDefinition x:Name="ScanGapColumn" Width="14" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                            <Border x:Name="ResultsCard" Grid.Column="2" Style="{StaticResource Card}" Height="370">
                                 <Grid><Grid.RowDefinitions><RowDefinition Height="59" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                     <Grid Margin="17,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><StackPanel VerticalAlignment="Center"><TextBlock Text="扫描结果" Style="{StaticResource SectionTitle}" /><TextBlock Text="{Binding ResultSummary}" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel><Border Grid.Column="1" Background="#102B2A" CornerRadius="5" Padding="8,4" VerticalAlignment="Center"><TextBlock Text="{Binding ElapsedText}" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource AccentBrush}" /></Border></Grid>
                                     <Grid Grid.Row="1">
@@ -150,7 +151,7 @@
                                     </Border>
                                 </Grid>
                             </Border>
-                            <Border x:Name="ScanSettingsCard" Grid.Column="2" Style="{StaticResource Card}" Height="370">
+                            <Border x:Name="ScanSettingsCard" Style="{StaticResource Card}" Height="370">
                                 <Grid><Grid.RowDefinitions><RowDefinition Height="43" /><RowDefinition Height="*" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                                     <Button x:Name="ScanSettingsToggle" Content="扫描设置" Click="ScanSettingsToggle_Click" Style="{StaticResource GhostButton}" HorizontalContentAlignment="Left" FontSize="15" FontWeight="SemiBold" Foreground="{StaticResource TextBrush}" Padding="17,8" ToolTip="展开或折叠扫描条件" />
                                     <ScrollViewer x:Name="ScanSettingsFields" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
@@ -162,7 +163,7 @@
                                             <WrapPanel Margin="0,13,0,0"><CheckBox Content="类型对齐" IsChecked="{Binding AlignmentEnabled}" FontSize="11" Margin="0,0,12,7" /><CheckBox Content="可写内存" IsChecked="{Binding WritableOnly}" FontSize="11" Margin="0,0,0,7" /></WrapPanel>
                                             <CheckBox Content="十六进制显示 / 输入" IsChecked="{Binding HexDisplayEnabled}" FontSize="11" Margin="0,2,0,0" ToolTip="整数显示十六进制；浮点数显示其 IEEE 原始位模式" />
                                             <Expander Header="浮点比较容差" Margin="0,13,0,0" FontSize="11"><StackPanel Margin="0,9,0,0"><CheckBox Content="启用近似比较" IsChecked="{Binding FloatToleranceEnabled}" FontSize="11" Margin="0,0,0,9" /><TextBlock Text="绝对容差" Style="{StaticResource FieldLabel}" FontSize="10" /><TextBox Text="{Binding FloatToleranceText, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /><TextBlock Text="相对容差" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,8,0,7" /><TextBox Text="{Binding RelativeToleranceText, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /></StackPanel></Expander>
-                                            <Expander Header="限定地址范围" Margin="0,12,0,0" FontSize="11"><StackPanel Margin="0,9,0,0"><TextBlock Text="起始地址（十六进制）" Style="{StaticResource FieldLabel}" FontSize="10" /><TextBox Text="{Binding StartAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /><TextBlock Text="结束地址（不包含）" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,8,0,7" /><TextBox Text="{Binding EndAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /></StackPanel></Expander>
+                                            <Expander Header="限定地址范围" Margin="0,12,0,0" FontSize="11"><StackPanel Margin="0,9,0,0"><TextBlock Text="起始地址（十六进制）" Style="{StaticResource FieldLabel}" FontSize="10" /><TextBox Text="{Binding StartAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" /><TextBlock Text="结束地址（包含）" Style="{StaticResource FieldLabel}" FontSize="10" Margin="0,8,0,7" /><TextBox Text="{Binding EndAddress, UpdateSourceTrigger=PropertyChanged}" FontFamily="Consolas" FontSize="12" MinHeight="32" Padding="9,6" ToolTip="结束地址包含在扫描范围内；输入十六进制地址" /></StackPanel></Expander>
                                         </StackPanel>
                                     </ScrollViewer>
                                     <Border Grid.Row="2" BorderBrush="{StaticResource LineBrush}" BorderThickness="0,1,0,0" Padding="17,10,17,7">

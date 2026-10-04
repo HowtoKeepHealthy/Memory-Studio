@@ -24,6 +24,12 @@ public static class Program
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool CloseHandle(nint handle);
     [DllImport("kernel32.dll",SetLastError=true)] static extern nint VirtualAllocEx(nint process,nint address,nuint bytes,uint allocation,uint protection);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool VirtualFreeEx(nint process,nint address,nuint bytes,uint type);
+    [StructLayout(LayoutKind.Sequential)] struct CursorPoint { public int X,Y; }
+    [StructLayout(LayoutKind.Sequential)] struct MouseInput { public int X,Y; public uint Data,Flags,Time; public nint Extra; }
+    [StructLayout(LayoutKind.Explicit,Size=40)] struct NativeInput { [FieldOffset(0)] public uint Type; [FieldOffset(8)] public MouseInput Mouse; }
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out CursorPoint point);
+    [DllImport("user32.dll")] static extern bool SetCursorPos(int x,int y);
+    [DllImport("user32.dll",SetLastError=true)] static extern uint SendInput(uint count,NativeInput[] input,int size);
     static void Check(bool value,string text) { if(!value) throw new Exception("FAIL: "+text); ++checks; Lines.Add("PASS "+text); Console.WriteLine(Lines[^1]); }
     static T Field<T>(object value,string name) => (T)value.GetType().GetField(name,BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(value)!;
     static async Task Wait(Func<bool> predicate,string reason,int ms=6000) { var t=Stopwatch.StartNew(); while(!predicate()) { if(t.ElapsedMilliseconds>ms) throw new Exception("TIMEOUT "+reason); await Task.Delay(30); } }
@@ -48,12 +54,76 @@ public static class Program
         app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source=new Uri("Theme.xaml",UriKind.Relative) });
         app.Startup+=async (_,_)=>
         {
-            try { await Run(); Lines.Add($"ALL {checks} PASSED"); File.WriteAllLines(Path.Combine(OutputDirectory,"browser-window-results.txt"),Lines); app.Shutdown(0); }
+            try { if(args.Contains("--scroll-only")) await RunScrollRegression(); else await Run(); Lines.Add($"ALL {checks} PASSED"); File.WriteAllLines(Path.Combine(OutputDirectory,"browser-window-results.txt"),Lines); app.Shutdown(0); }
             catch(Exception ex) { Lines.Add(ex.ToString()); Console.Error.WriteLine(ex); File.WriteAllLines(Path.Combine(OutputDirectory,"browser-window-results.txt"),Lines); app.Shutdown(1); }
         };
         app.Run();
     }
     static async Task CompleteHexDialog() { await Task.Delay(100); var editor=Application.Current.Windows.OfType<MemoryBytesEditor>().Single(); Field<TextBox>(editor,"_input").Text="7F"; var actions=((Grid)editor.Content).Children.OfType<StackPanel>().Last(); actions.Children.OfType<Button>().Last().RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); }
+    static IEnumerable<T> Visuals<T>(DependencyObject root) where T:DependencyObject
+    {
+        for(int i=0;i<VisualTreeHelper.GetChildrenCount(root);++i)
+        { var child=VisualTreeHelper.GetChild(root,i); if(child is T match) yield return match; foreach(var nested in Visuals<T>(child)) yield return nested; }
+    }
+    static ulong VisibleFirst(DataGrid grid)
+    {
+        grid.UpdateLayout();
+        return Visuals<DataGridRow>(grid).Where(row=>row.Item is DisassemblyRow&&row.IsVisible&&row.ActualHeight>0)
+            .Where(row=> { var position=row.TransformToAncestor(grid).Transform(new Point(0,0)); return position.Y+row.ActualHeight>grid.ColumnHeaderHeight&&position.Y<grid.ActualHeight-20; })
+            .Select(row=>((DisassemblyRow)row.Item).Address).Min();
+    }
+    static async Task NativeWheel(DisassemblyWindow window,int delta,int events=1)
+    {
+        window.Activate(); var grid=Field<DataGrid>(window,"InstructionGrid"); grid.Focus();
+        var point=grid.PointToScreen(new Point(Math.Min(350,grid.ActualWidth/2),Math.Min(85,grid.ActualHeight/2)));
+        SetCursorPos((int)point.X,(int)point.Y); await Task.Delay(60);
+        var input=Enumerable.Range(0,events).Select(_=>new NativeInput { Mouse=new MouseInput { Data=unchecked((uint)delta),Flags=0x0800 } }).ToArray();
+        Check(SendInput((uint)input.Length,input,Marshal.SizeOf<NativeInput>())==input.Length,"Win32 input queue receives real wheel gesture");
+        await Task.Delay(150); await Wait(()=>!Field<bool>(window,"_loading"),"native wheel load settles"); await Task.Delay(80);
+    }
+    static async Task RunScrollRegression()
+    {
+        GetCursorPos(out var originalCursor);
+        nint memory=VirtualAlloc(0,65536,0x3000,4); if(memory==0) throw new Exception("VirtualAlloc failed");
+        using var vm=new MainViewModel(); var main=new MainWindow { DataContext=vm,Width=900,Height=700 }; Application.Current.MainWindow=main;
+        DisassemblyWindow? code=null;
+        try
+        {
+            byte[] nops=Enumerable.Repeat((byte)0x90,65536).ToArray(); Marshal.Copy(nops,0,memory,nops.Length);
+            if(!VirtualProtect(memory,4096,1,out _)) throw new Exception("Protect fixture first page failed");
+            ulong ip=(ulong)memory.ToInt64()+4096+64;
+            Marshal.Copy(new byte[]{0xB8,42,0,0,0,0xC3},0,(nint)(long)ip,6);
+            main.Show(); await vm.AttachToProcessAsync(Environment.ProcessId);
+            var record=new WatchRow { Address=ip,Type=2,Size=4,FrozenValue=BitConverter.GetBytes(42),ValueText="42" };
+            await vm.HandleRecordActionAsync(record,"disassemble"); code=main.OwnedWindows.OfType<DisassemblyWindow>().Single();
+            await Wait(()=>Field<DataGrid>(code,"InstructionGrid").Items.Count>0&&!Field<bool>(code,"_loading"),"page start real main action browser");
+            await Task.Delay(120); var grid=Field<DataGrid>(code,"InstructionGrid"); var scroll=Field<ScrollViewer>(code,"_scroll");
+            var rows=Field<System.Collections.ObjectModel.ObservableCollection<DisassemblyRow>>(code,"_rows");
+            Check(rows[0].Address==(ulong)memory.ToInt64()+4096&&rows.Any(row=>row.Address<ip&&row.IsBoundaryUncertain),"IP near readable page start keeps its 64-byte reverse suffix despite earlier noaccess page");
+            ulong visible=VisibleFirst(grid); await NativeWheel(code,120,4);
+            Check(VisibleFirst(grid)<visible&&((DisassemblyRow)grid.SelectedItem).Address==ip&&main.IsEnabled,"actual native wheel scrolls above initial IP and keeps main interactive");
+            scroll.ScrollToTop(); await Task.Delay(120); await Wait(()=>!Field<bool>(code,"_loading"),"unreadable upper boundary");
+            Check(VisibleFirst(grid)==(ulong)memory.ToInt64()+4096,"reverse browser stops exactly at unreadable boundary");
+            // A prior failed read is retried by a wheel at the top, where ScrollChanged itself cannot fire.
+            if(!VirtualProtect(memory,4096,4,out _)) throw new Exception("Restore fixture first page failed");
+            ulong previousVisible=VisibleFirst(grid); int previousCount=rows.Count;
+            await NativeWheel(code,120);
+            Check(rows.Count>previousCount&&VisibleFirst(grid)<previousVisible,"single real wheel at zero offset retries/prepends and visibly moves upward");
+            int firstCount=rows.Count; ulong firstVisible=VisibleFirst(grid);
+            await NativeWheel(code,1200,20);
+            Check(rows.Count>firstCount&&VisibleFirst(grid)<firstVisible&&((DisassemblyRow)grid.SelectedItem).Address==ip,"burst native wheel continues through first reverse loading region without losing selection");
+            int secondCount=rows.Count; ulong secondVisible=VisibleFirst(grid);
+            await NativeWheel(code,1200,20);
+            Check(rows.Count>secondCount&&VisibleFirst(grid)<secondVisible,"second native wheel burst continuously enters another reverse loading region");
+            Check(rows.Zip(rows.Skip(1)).All(pair=>pair.First.NextAddress==pair.Second.Address)&&rows.Where(row=>row.Address<ip).All(row=>row.IsBoundaryUncertain),"reverse continuous rows preserve gaps and never promote inferred starts");
+            Save(code,"disassembly-real-upward-wheel.png");
+        }
+        finally
+        {
+            code?.Close(); if(main.IsVisible) { main.Close(); await Task.Delay(80); }
+            VirtualFree(memory,0,0x8000); SetCursorPos(originalCursor.X,originalCursor.Y);
+        }
+    }
     static void RunHistoryOverlap()
     {
         nint block=VirtualAlloc(0,8192,0x3000,4); if(block==0) throw new Exception("VirtualAlloc failed");

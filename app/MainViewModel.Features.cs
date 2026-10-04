@@ -134,8 +134,8 @@ public sealed partial class MainViewModel
         _processControl?.Dispose(); _processControl = pid == Environment.ProcessId ? null : new ProcessControlService(pid);
         _editHistory = MemoryEditHistory.ForProcess(pid); _recordHistory.Clear(); _scanUiHistory.Clear(); _visibleResults = [];
         SyncWatchRegistrations();
-        if (EndAddress is "" or "0x100000000" or "0x0000800000000000")
-            try { EndAddress = ProcessInspector.DetectArchitecture(pid).Bitness == 32 ? "0x100000000" : "0x0000800000000000"; } catch { EndAddress = "0x0000800000000000"; }
+        if (EndAddress is "" or "0xFFFFFFFF" or "0x00007FFFFFFFFFFF" or "0x100000000" or "0x0000800000000000")
+            try { EndAddress = ProcessInspector.DetectArchitecture(pid).Bitness == 32 ? "0xFFFFFFFF" : "0x00007FFFFFFFFFFF"; } catch { EndAddress = "0x00007FFFFFFFFFFF"; }
         Notify(nameof(IsPaused)); Notify(nameof(PauseButtonText)); RefreshCommands();
     }
     private ScanUiState CaptureScanUi() => new(_scanType, _scanSize, _hasScan, SelectedScanMode.Value, SearchValue, SearchUpperValue, _page,
@@ -158,6 +158,7 @@ public sealed partial class MainViewModel
             ScanUiState? state = _scanUiHistory.LastOrDefault();
             if (state != null) _scanUiHistory.RemoveAt(_scanUiHistory.Count - 1);
             _hasScan = history.HasScan; _scanType = (int)history.Type; _scanSize = (int)history.ByteWidth;
+            _hasUnknownSnapshot = history.HasUnknownSnapshot;
             _total = engine.Count; _page = state?.Page ?? 0; _showingAllResults = false; _resultOverrides.Clear();
             if (_page * PageSize >= _total) _page = 0;
             if (state != null)

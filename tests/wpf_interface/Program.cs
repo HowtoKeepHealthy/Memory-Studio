@@ -9,6 +9,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using System.Windows.Media.Imaging;
+using System.Windows.Data;
 using MemoryStudio;
 
 internal static class Program
@@ -76,6 +77,9 @@ internal static class Program
             Task crossPage = Dispatcher.CurrentDispatcher.Invoke(() => CheckCrossPageAsync(resultGrid));
             WaitUntil(() => crossPage.IsCompleted, 8000);
             crossPage.GetAwaiter().GetResult();
+            Task unknown = Dispatcher.CurrentDispatcher.Invoke(CheckUnknownFlowAsync);
+            WaitUntil(() => unknown.IsCompleted, 10000);
+            unknown.GetAwaiter().GetResult();
             CheckNewInteraction(resultGrid, compactGrid, fullGrid);
             CheckLayouts();
         }
@@ -103,15 +107,30 @@ internal static class Program
             Pump(); _window.UpdateLayout();
             grid.SelectedItems.Clear(); grid.SelectedItems.Add(grid.Items[0]); grid.SelectedItems.Add(grid.Items[1]);
             var row = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(grid.Items[0]);
+            grid.CurrentCell = new DataGridCellInfo(grid.Items[0], grid.Columns.OfType<DataGridBoundColumn>().First());
             foreach (var column in grid.Columns.OfType<DataGridBoundColumn>().Where(c => ((System.Windows.Data.Binding)c.Binding).Path.Path is "ValueText" or "TypeLabel" or "Description"))
             {
                 var cell = Descendants<DataGridCell>(row).Single(c => c.Column == column);
                 _lastEditorRequest = null;
                 var first = LeftClick(grid, cell, 1);
-                Require(first.Handled && grid.SelectedItems.Count == 2, grid.Name + " first click preserves a selected group before double click");
+                Require(first.Handled && grid.SelectedItems.Count == 2, grid.Name + " real preview click on the current focus row preserves its group" + $" [handled={first.Handled}, selected={grid.SelectedItems.Count}, focus={ReferenceEquals(grid.CurrentCell.Item, grid.Items[0])}]");
                 LeftClick(grid, cell, 2); Pump();
                 Require(grid.SelectedItems.Count == 2 && _lastEditorRequest?.AddressText.Contains("2") == true, grid.Name + " double click edits two actual selected records: " + column.Header);
             }
+            var second = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(grid.Items[1]);
+            var secondValue = Descendants<DataGridCell>(second).Single(c => c.Column is DataGridBoundColumn b && ((Binding)b.Binding).Path.Path == "ValueText");
+            var another = LeftClick(grid, secondValue, 1);
+            Require(!another.Handled && grid.SelectedItems.Count == 1 && ReferenceEquals(grid.SelectedItem, grid.Items[1]), grid.Name + " ordinary click on another already selected row replaces the old group");
+            grid.SelectedItems.Add(grid.Items[0]);
+            grid.CurrentCell = new DataGridCellInfo(grid.Items[1], secondValue.Column);
+            foreach (var modifier in new[] { ModifierKeys.Control, ModifierKeys.Shift })
+            {
+                var modified = WithModifiers(modifier, () => LeftClick(grid, secondValue, 1));
+                Require(!modified.Handled && grid.SelectedItems.Count == 2, grid.Name + " custom preview handler leaves " + modifier + " selection to WPF");
+            }
+            LeftClick(grid, grid, 1);
+            Require(grid.SelectedItems.Count == 0, grid.Name + " real preview click on table blank clears selection");
+            grid.SelectedItems.Add(grid.Items[0]); grid.SelectedItems.Add(grid.Items[1]);
             var third = (DataGridRow)grid.ItemContainerGenerator.ContainerFromItem(grid.Items[2]);
             var thirdValue = Descendants<DataGridCell>(third).Single(c => c.Column is DataGridBoundColumn b && ((System.Windows.Data.Binding)b.Binding).Path.Path == "ValueText");
             _lastEditorRequest = null;
@@ -124,16 +143,70 @@ internal static class Program
         var visible = (ResultRow[])typeof(MainViewModel).GetField("_visibleResults", PrivateInstance)!.GetValue(_vm)!;
         Require(visible.Length > 0 && visible.Length < 30 && visible.Any(r => ReferenceEquals(r, resultGrid.Items[800])), "visible-range callback follows result scrolling instead of all 1024 records");
         compactGrid.SelectedItems.Clear(); compactGrid.SelectedItems.Add(compactGrid.Items[0]); compactGrid.SelectedItems.Add(compactGrid.Items[1]);
+        CheckOperationSelection(compactGrid);
         _vm.EditValueText = "444";
         Invoke("WriteCompactSelected_Click", _window, new RoutedEventArgs());
         WaitUntil(() => !_vm.IsBusy, 5000);
         Require(((WatchRow)compactGrid.Items[0]).ValueText == "444" && ((WatchRow)compactGrid.Items[1]).ValueText == "444" && Marshal.ReadInt32(_fixtureMemory) == 444 && Marshal.ReadInt32(_fixtureMemory, 4) == 444, "compact toolbar writes both selected watches into real memory");
         ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 1; Pump();
         fullGrid.SelectedItems.Clear(); fullGrid.SelectedItems.Add(fullGrid.Items[1]); fullGrid.SelectedItems.Add(fullGrid.Items[2]);
+        CheckOperationSelection(fullGrid);
         _vm.EditValueText = "555";
         Invoke("WriteFullSelected_Click", _window, new RoutedEventArgs());
         WaitUntil(() => !_vm.IsBusy, 5000);
         Require(((WatchRow)fullGrid.Items[0]).ValueText == "444" && ((WatchRow)fullGrid.Items[1]).ValueText == "555" && ((WatchRow)fullGrid.Items[2]).ValueText == "555" && Marshal.ReadInt32(_fixtureMemory) == 444 && Marshal.ReadInt32(_fixtureMemory, 4) == 555 && Marshal.ReadInt32(_fixtureMemory, 8) == 555, "full toolbar writes its own selected group into real memory independently of compact grid selection");
+        resultGrid.SelectedItems.Add(resultGrid.Items[0]);
+        LeftClick(fullGrid, (Grid)_window.FindName("MainShell"), 1);
+        Require(resultGrid.SelectedItems.Count == 0 && compactGrid.SelectedItems.Count == 0 && fullGrid.SelectedItems.Count == 0, "real preview click on main content blank clears all record selections");
+    }
+
+    private static void CheckOperationSelection(DataGrid grid)
+    {
+        var input = Descendants<TextBox>(_window).First(box => BindingOperations.GetBinding(box, TextBox.TextProperty)?.Path.Path == "EditValueText");
+        LeftClick(grid, input, 1);
+        Require(grid.SelectedItems.Count == 2, grid.Name + " value input click retains the selected group");
+        var write = Descendants<Button>(_window).First(button => Equals(button.Content, "写入所选"));
+        LeftClick(grid, write, 1);
+        Require(grid.SelectedItems.Count == 2, grid.Name + " write operation button click retains the selected group");
+    }
+
+    private static async Task CheckUnknownFlowAsync()
+    {
+        _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 2);
+        _vm.SelectedScanMode = _vm.ScanModes.First(mode => mode.Value == 1);
+        _vm.SearchValue = "";
+        string boundedStart = _vm.StartAddress, boundedEnd = _vm.EndAddress;
+        _vm.StartAddress = "0x00000000"; _vm.EndAddress = "0x00007FFFFFFFFFFF";
+        Require(_vm.FirstScanCommand.CanExecute(null) && !_vm.NextScanCommand.CanExecute(null), "unknown with empty value and the default full range enables first scan without value validation");
+        _vm.StartAddress = boundedStart; _vm.EndAddress = boundedEnd;
+        _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 4);
+        _vm.FloatToleranceText = ""; _vm.RelativeToleranceText = "";
+        await _vm.ScanAsync(false); Pump();
+        Require(_vm.Results.Count == 200 && _vm.ResultSummary.Contains("1,024"), "unknown initial float scan ignores empty value and unused tolerance fields");
+        Require(_vm.SelectedScanMode.Value == 2 && _vm.NextScanCommand.CanExecute(null) && !_vm.FirstScanCommand.CanExecute(null), "successful unknown switches to Changed with next-scan command enabled");
+        Marshal.Copy(BitConverter.GetBytes(0.5f), 0, _fixtureMemory + 2000, 4);
+        _vm.FloatToleranceText = "0.001"; _vm.RelativeToleranceText = "0.000001";
+        await _vm.ScanAsync(true); Pump();
+        Require(_vm.Results.Count == 1 && _vm.Results[0].Address == (ulong)_fixtureMemory + 2000, "Changed narrows a real unknown snapshot to the modified float");
+        ulong actualTotal = (ulong)typeof(MainViewModel).GetField("_total", PrivateInstance)!.GetValue(_vm)!;
+        bool actualSnapshot = (bool)typeof(MainViewModel).GetField("_hasUnknownSnapshot", PrivateInstance)!.GetValue(_vm)!;
+        try
+        {
+            typeof(MainViewModel).GetField("_total", PrivateInstance)!.SetValue(_vm, 2_000_001UL);
+            typeof(MainViewModel).GetField("_hasUnknownSnapshot", PrivateInstance)!.SetValue(_vm, true);
+            Require(!await _vm.SelectAllScanResultsAsync() && _vm.Results.Count == 1 && !_vm.IsBusy && _vm.ResultSummary.StartsWith("快照"), "snapshot stage rejects loading all candidates above two million while preserving the page");
+        }
+        finally
+        {
+            typeof(MainViewModel).GetField("_total", PrivateInstance)!.SetValue(_vm, actualTotal);
+            typeof(MainViewModel).GetField("_hasUnknownSnapshot", PrivateInstance)!.SetValue(_vm, actualSnapshot);
+        }
+        Marshal.Copy(Enumerable.Repeat(100, 1024).ToArray(), 0, _fixtureMemory, 1024);
+        _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 2);
+        _vm.SelectedScanMode = _vm.ScanModes.First(mode => mode.Value == 0); _vm.SearchValue = "100";
+        await _vm.ScanAsync(false);
+        if (!await _vm.SelectAllScanResultsAsync()) throw new InvalidOperationException("restore full result fixture failed");
+        Pump();
     }
 
     private static void CheckLayouts()
@@ -142,14 +215,15 @@ internal static class Program
         _window.Width = 1280; _window.Height = 820; Pump(); _window.UpdateLayout();
         Render("ui-1280.png");
         _window.Width = 780; _window.Height = 520; Pump(); _window.UpdateLayout();
-        Require(((Grid)_window.FindName("ScanLayout")).ActualWidth < 720 && Grid.GetRow((Border)_window.FindName("ResultsCard")) == 2, "780x520 stacks scan controls above a bounded result table");
-        Require(((ScrollViewer)_window.FindName("ScanSettingsFields")).Visibility == Visibility.Collapsed, "compact layout initially collapses advanced scan settings");
+        CheckSidebar("780x520");
+        Require(((ScrollViewer)_window.FindName("ScanSettingsFields")).Visibility == Visibility.Visible, "compact layout keeps search conditions expanded beside the results");
         Require(((ScrollViewer)_window.FindName("ScanPageScroll")).ScrollableHeight > 0, "small-window page scroll exposes the address table and overflow content");
         Render("ui-780.png");
-        Invoke("ScanSettingsToggle_Click", _window, new RoutedEventArgs()); Pump();
-        Require(((ScrollViewer)_window.FindName("ScanSettingsFields")).Visibility == Visibility.Visible, "small scan settings can expand to editable type, mode and value controls");
+        var page = (ScrollViewer)_window.FindName("ScanPageScroll");
+        Require(page.ScrollableWidth > 0, "small-window horizontal scroll reaches the bounded results without moving the sidebar above them");
+        page.ScrollToRightEnd(); Pump(); CheckSidebar("780 horizontally scrolled");
         Render("ui-780-settings-expanded.png");
-        Invoke("ScanSettingsToggle_Click", _window, new RoutedEventArgs()); Pump();
+        page.ScrollToLeftEnd(); Pump();
         ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 1; Pump(); Render("ui-780-watches.png");
         ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 0; Pump();
         AppearanceSettings.Initialize();
@@ -163,6 +237,7 @@ internal static class Program
             Require(root.LayoutTransform is ScaleTransform { ScaleX: 1.5, ScaleY: 1.5 }, "global display setting applies root layout scale");
             Require(Math.Abs(_window.FontSize - 18) < .01, "font setting applies once without inherited double multiplication");
             Require(((TextBlock)_window.FindName("NavWatchLabel")).Visibility == Visibility.Collapsed, "extreme zoom keeps navigation reachable through icon buttons and tooltips");
+            CheckSidebar("780 at 150 percent with font 18");
             Render("ui-780-150-font18.png");
             var other = new Window { Width = 300, Height = 200, ShowInTaskbar = false, ShowActivated = false, Left = -15000, Top = -15000, WindowStartupLocation = WindowStartupLocation.Manual, Content = new DockPanel { Children = { new TextBlock { Text = "字号检查" } } } };
             other.Show(); double otherBaseline = other.FontSize; AppearanceSettings.Apply(other); Pump();
@@ -172,6 +247,15 @@ internal static class Program
             other.Close(); Pump();
         }
         finally { AppearanceSettings.Current.ScalePercent = originalScale; AppearanceSettings.Current.FontSize = originalFont; }
+    }
+
+    private static void CheckSidebar(string name)
+    {
+        var layout = (Grid)_window.FindName("ScanPageLayout");
+        var settings = (Border)_window.FindName("ScanSettingsCard");
+        var results = (Border)_window.FindName("ResultsCard");
+        Point left = settings.TranslatePoint(new Point(0, 0), layout), right = results.TranslatePoint(new Point(0, 0), layout);
+        Require(Grid.GetRow(settings) == 0 && Grid.GetRow(results) == 0 && Grid.GetColumn(settings) == 0 && Grid.GetColumn(results) == 2 && Math.Abs(left.Y - right.Y) < 1 && left.X + settings.ActualWidth < right.X, name + " keeps search on the left of results without overlap or vertical relocation");
     }
 
     private static void Render(string name)
@@ -193,10 +277,26 @@ internal static class Program
 
     private static MouseButtonEventArgs LeftClick(DataGrid grid, DependencyObject source, int clicks)
     {
-        var args = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = UIElement.PreviewMouseLeftButtonDownEvent, Source = source };
+        // Specific left-button preview events are direct events re-raised by WPF's tunnel; start that real tunnel.
+        var args = new MouseButtonEventArgs(Mouse.PrimaryDevice, Environment.TickCount, MouseButton.Left) { RoutedEvent = Mouse.PreviewMouseDownEvent, Source = source };
         typeof(MouseButtonEventArgs).GetProperty("ClickCount")!.SetValue(args, clicks);
-        Invoke("RecordGrid_MouseLeftButtonDown", grid, args);
+        _window.Dispatcher.Invoke(() => ((UIElement)source).RaiseEvent(args));
         return args;
+    }
+
+    private static T WithModifiers<T>(ModifierKeys modifiers, Func<T> action)
+    {
+        var saved = new byte[256];
+        if (!GetKeyboardState(saved)) throw new InvalidOperationException("keyboard state unavailable");
+        try
+        {
+            var state = new byte[256];
+            if (modifiers.HasFlag(ModifierKeys.Control)) state[0x11] = state[0xA2] = 0x80;
+            if (modifiers.HasFlag(ModifierKeys.Shift)) state[0x10] = state[0xA0] = 0x80;
+            if (!SetKeyboardState(state)) throw new InvalidOperationException("keyboard state simulation failed");
+            return action();
+        }
+        finally { SetKeyboardState(saved); }
     }
 
     private static void CheckGrid(DataGrid grid, string name)
@@ -252,13 +352,14 @@ internal static class Program
         if (memory == 0) throw new InvalidOperationException("fixture allocation failed");
         _fixtureMemory = memory; // Released after view-model shutdown so live refresh never reads a freed fixture.
         Marshal.Copy(Enumerable.Repeat(100, 1024).ToArray(), 0, memory, 1024);
+        _vm.Watches.Clear(); _vm.SelectedWatch = null; // Initial UI fixtures must not prompt a process-switch confirmation.
         await _vm.AttachToProcessAsync(Environment.ProcessId);
         for (int i = 0; i < 3; i++) _vm.Watches.Add(new WatchRow { Address = (ulong)memory + (ulong)(i * 4), Type = 2, Size = 4, FrozenValue = BitConverter.GetBytes(100), ValueText = "100", Description = "live fixture " + i });
         _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 2);
         _vm.SelectedScanMode = _vm.ScanModes.First(mode => mode.Value == 0);
         _vm.SearchValue = "100";
         _vm.StartAddress = $"0x{(ulong)memory:X16}";
-        _vm.EndAddress = $"0x{(ulong)memory + 4096:X16}";
+        _vm.EndAddress = $"0x{(ulong)memory + 4095:X16}";
         await _vm.ScanAsync(false);
         Pump();
         Require(_vm.Results.Count == 200, "real scan initially displays a 200-record page from 1,024 matches");

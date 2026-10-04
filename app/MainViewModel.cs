@@ -19,7 +19,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _progressTimer = new() { Interval = TimeSpan.FromMilliseconds(100) };
     private Task? _watchJob;
     private CancellationTokenSource? _batchCancellation;
-    private bool _watchUpdating, _disposed, _isBusy, _hasScan, _showingAllResults;
+    private bool _watchUpdating, _disposed, _isBusy, _hasScan, _showingAllResults, _hasUnknownSnapshot;
     private int _scanType = 2, _scanSize = 4;
     private ulong _page, _total;
     private ProcessItem? _selectedProcess;
@@ -27,7 +27,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private WatchRow? _selectedWatch;
     private Option _selectedType = ValueCodec.Types[0];
     private Option _selectedScanMode;
-    private string _searchValue = "100", _startAddress = "0x00000000", _endAddress = "0x0000800000000000", _editValueText = "";
+    private string _searchValue = "100", _startAddress = "0x00000000", _endAddress = "0x00007FFFFFFFFFFF", _editValueText = "";
     private string _processLabel = "尚未连接进程", _statusText = "选择进程并连接，或启动演示进程体验扫描。", _elapsedText = "等待扫描";
     private bool _alignmentEnabled = true, _writableOnly = true;
     private double _scanProgress;
@@ -61,7 +61,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         RefreshProcessesCommand = Command(RefreshProcesses, () => !IsBusy);
         AttachCommand = Async(AttachAsync, () => SelectedProcess != null && !IsBusy);
         LaunchDemoCommand = Async(LaunchDemoAsync, () => !IsBusy);
-        FirstScanCommand = Async(() => ScanAsync(false), () => IsAttached && !IsBusy && SelectedScanMode.Value is 0 or 1 or 6 or 7 or 8);
+        FirstScanCommand = Async(() => ScanAsync(false), () => IsAttached && !IsBusy && SelectedScanMode.Value is 0 or 1 or 6 or 7 or 8 && (SelectedScanMode.Value != 1 || ValueCodec.Width(SelectedType.Value) > 0));
         NextScanCommand = Async(() => ScanAsync(true), () => IsAttached && _hasScan && !IsBusy && SelectedScanMode.Value != 1);
         NewScanCommand = Command(NewScan, () => !IsBusy);
         CancelScanCommand = Command(() => { _batchCancellation?.Cancel(); _engine?.Cancel(); StatusText = "正在停止当前操作…"; }, () => IsBusy);
@@ -106,7 +106,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public string LogText => StatusText;
     public string ElapsedText { get => _elapsedText; private set => Set(ref _elapsedText, value); }
     public double ScanProgress { get => _scanProgress; private set => Set(ref _scanProgress, value); }
-    public string ResultSummary => _hasScan ? $"{_total:N0} 个匹配地址" : "等待首次扫描";
+    public string ResultSummary => _hasScan ? _hasUnknownSnapshot && _total > 2_000_000 ? $"快照 · {_total:N0} 个候选地址" : $"{_total:N0} 个匹配地址" : "等待首次扫描";
     public string PageLabel => _total == 0 ? "0 / 0" : _showingAllResults ? $"全部 {_total:N0} 项" : $"{_page + 1:N0} / {(_total + PageSize - 1) / PageSize:N0}";
     private RelayCommand Command(Action action, Func<bool> canExecute)
     {
@@ -207,7 +207,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     private void NewScan()
     {
         _resultOverrides.Clear();
-        Results.Clear(); SelectedResult = null; _hasScan = false; _showingAllResults = false; _total = 0; _page = 0;
+        Results.Clear(); SelectedResult = null; _hasScan = false; _hasUnknownSnapshot = false; _showingAllResults = false; _total = 0; _page = 0;
         ScanProgress = 0; ElapsedText = "等待扫描"; SelectedScanMode = ScanModes[0];
         Notify(nameof(ResultSummary)); Notify(nameof(PageLabel)); RefreshCommands();
         StatusText = IsAttached ? "扫描条件已重置。可以开始新的首次扫描。" : "选择进程并连接，或启动演示进程体验扫描。";
@@ -225,7 +225,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         byte[] value = mode is 0 or >= 6 ? ValueCodec.Parse(type == 8 && mode == 0 ? 8 : type, type == 8 && mode == 0 ? "00" : SearchValue, HexDisplayEnabled) : [];
         if (type == 8 && mode == 0) { var pattern = ValueCodec.ParsePattern(SearchValue); value = pattern.Value; settings.PatternMask = pattern.Mask; }
         if (mode == 8) settings.UpperValue = ValueCodec.Parse(type, SearchUpperValue, HexDisplayEnabled);
-        settings.Approximate = type is 4 or 5 && FloatToleranceEnabled;
+        settings.Approximate = mode != 1 && type is 4 or 5 && FloatToleranceEnabled;
         if (settings.Approximate)
         {
             settings.AbsoluteTolerance = double.Parse(FloatToleranceText, CultureInfo.InvariantCulture);
@@ -236,8 +236,11 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         int size = next ? _scanSize : (value.Length > 0 ? value.Length : ValueCodec.Width(type));
         if (next && mode == 0 && value.Length != size) throw new ArgumentException("再次扫描的字符串或字节长度需要保持一致。");
         ulong start = ValueCodec.Address(StartAddress), end = ValueCodec.Address(EndAddress);
-        if (end != 0 && end <= start) throw new ArgumentException("结束地址必须大于起始地址（结束地址不包含在范围内）。");
-        var request = new ScanRequest { Type = (uint)type, Mode = (uint)mode, StartAddress = start, EndAddress = end, Alignment = (uint)(AlignmentEnabled ? Math.Max(1, ValueCodec.Width(type)) : 1), MaxResults = 2_000_000, WritableOnly = WritableOnly ? 1u : 0u };
+        bool explicitEnd = !string.IsNullOrWhiteSpace(EndAddress);
+        if (explicitEnd && end < start) throw new ArgumentException("结束地址必须大于或等于起始地址（结束地址包含在扫描范围内）。");
+        // The UI is inclusive; the native ABI stays exclusive, with zero selecting the process maximum.
+        ulong nativeEnd = !explicitEnd || end == ulong.MaxValue ? 0 : end + 1;
+        var request = new ScanRequest { Type = (uint)type, Mode = (uint)mode, StartAddress = start, EndAddress = nativeEnd, Alignment = (uint)(AlignmentEnabled ? Math.Max(1, ValueCodec.Width(type)) : 1), MaxResults = 2_000_000, WritableOnly = WritableOnly ? 1u : 0u };
         var previousUi = CaptureScanUi();
         IsBusy = true; ScanProgress = 0; StatusText = next ? "正在筛选上次扫描的候选地址…" : "正在扫描可读取的内存区域…"; _progressTimer.Start();
         try
@@ -247,13 +250,16 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (_disposed) return;
             UpdateProgress();
             if (status == 5) { StatusText = "扫描已取消，上次成功的结果已保留。"; return; }
-            if (status != 0) { string error = engine.LastScanError; throw new InvalidOperationException(status == 6 ? "候选地址超过 2,000,000 个。请缩小地址范围或使用更精确的条件；上次结果已保留。" : error); }
+            if (status != 0) { string error = engine.LastScanError; throw new InvalidOperationException(status == 6 && error.StartsWith("Result limit", StringComparison.OrdinalIgnoreCase) ? "普通扫描候选超过 2,000,000 个。请缩小范围或使用更精确的条件；也可先用未知初始值快照逐步筛选，上次结果已保留。" : error); }
             _resultOverrides.Clear();
             RememberScanUi(previousUi);
             _scanType = type; _scanSize = size; _hasScan = true; _showingAllResults = false; _page = 0; _total = engine.Count;
+            _hasUnknownSnapshot = engine.History.HasUnknownSnapshot;
             await LoadPageAsync(); ScanProgress = 100;
             Notify(nameof(ResultSummary)); Notify(nameof(PageLabel));
             StatusText = _total > 0 ? $"扫描完成，找到 {_total:N0} 个地址。双击按列编辑；Ctrl+A 全选全部结果，右键批量操作。" : "未找到匹配地址。检查类型、数值或关闭「仅扫描可写区域」后重试。";
+            if (mode == 1 && _total > 0) StatusText = $"已记录 {_total:N0} 个未知初始值候选。改变目标数值后使用变化、增加或减少筛选，也可输入精确值继续收敛。";
+            else if (_hasUnknownSnapshot && _total > 2_000_000) StatusText = $"快照筛选完成，仍有 {_total:N0} 个候选。可按页浏览，请继续筛选后再全选全部记录。";
             if (mode == 1) SelectedScanMode = ScanModes[2];
         }
         finally { _progressTimer.Stop(); IsBusy = false; }
@@ -295,6 +301,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task<bool> SelectAllScanResultsAsync()
     {
         if (_disposed || IsBusy || _engine == null || !_hasScan || _total == 0) return false;
+        if (_total > 2_000_000) { StatusText = $"当前快照仍有 {_total:N0} 个候选；请先继续筛选至 2,000,000 项以内，再全选全部。可正常浏览并选择当前页。"; return false; }
         if (_showingAllResults || (ulong)Results.Count == _total) return true;
         var engine = _engine;
         var overrides = _resultOverrides.ToDictionary(p => p.Key, p => p.Value);

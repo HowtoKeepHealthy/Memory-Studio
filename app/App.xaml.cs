@@ -106,7 +106,7 @@ public partial class App : Application
             await Task.Delay(10);
         }
         vm.StartAddress = $"0x{_previewMemory:X}";
-        vm.EndAddress = $"0x{(ulong)_previewMemory + 4096:X}";
+        vm.EndAddress = $"0x{(ulong)_previewMemory + 4095:X}";
         foreach (var item in new[] { (Type: 2, Value: "100", Name: "生命值"), (Type: 2, Value: "2500", Name: "金币"), (Type: 4, Value: "1.25", Name: "移动速度") })
         {
             vm.SelectedType = vm.TypeOptions.Single(t => t.Value == item.Type);

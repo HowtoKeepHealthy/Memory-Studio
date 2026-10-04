@@ -16,10 +16,11 @@ internal static class SmokeTests
         {
             await FeatureSmokeTests.RunAsync(Check);
             await EnhancedSmokeTests.RunAsync(Check);
+            await UnknownScanSmokeTests.RunAsync(Check);
             block = Marshal.AllocHGlobal(4096);
             Marshal.Copy(new byte[4096], 0, block, 4096);
             Marshal.WriteInt32(block, 16, 987654321);
-            vm = new MainViewModel { StartAddress = $"0x{block:X}", EndAddress = $"0x{(ulong)block + 4096:X}", SearchValue = "987654321" };
+            vm = new MainViewModel { StartAddress = $"0x{block:X}", EndAddress = $"0x{(ulong)block + 4095:X}", SearchValue = "987654321" };
             Check(!vm.FirstScanCommand.CanExecute(null), "First scan disabled before attach");
             vm.SelectedProcess = vm.Processes.Single(p => p.Id == Environment.ProcessId);
             vm.AttachCommand.Execute(null);

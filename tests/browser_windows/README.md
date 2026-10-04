@@ -27,3 +27,11 @@ powershell -ExecutionPolicy Bypass -File scripts/test-browser-windows.ps1 -Histo
 ```
 
 这 4 项在测试进程的两个页面上构造两处重叠修改和一处独立修改，再将重叠页设为只读：确认独立步骤正常恢复、失败重叠步骤与更早依赖步骤保留，重新开放写权限后重试恢复原值，并确认冻结维护使用恢复后的基准。
+
+真实向上滚轮回归（用 Win32 SendInput 经 WPF 输入队列，而非直接触发路由事件）可单独运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/test-browser-windows.ps1 -ScrollOnly
+```
+
+该专项通过主窗口记录的实际反汇编操作打开浏览器，验证当前 IP 接近可读页起点时保留可读的前方字节、在不可读边界准确停止、边界变为可读后同一滚轮动作重试加载并可见上移，以及连续快速滚轮进入两个反向加载区域。测试结束会恢复鼠标位置，并生成 `disassembly-real-upward-wheel.png`。

@@ -119,7 +119,7 @@ int wmain(int argc,wchar_t** argv){
             for(int i=0;i<20;++i)s.ok(r);auto info=s.history();check(info.undo_count==16&&info.used_bytes<=info.budget_bytes,"History not bounded");
         });
         run("History budget uses allocated candidate+snapshot memory",[&]{
-            Memory m(child.info.hProcess,2'000'000);Session s(core,child.info.dwProcessId);auto r=request(m,MS_U8,MS_UNKNOWN,nullptr,0);
+            Memory m(child.info.hProcess,2'000'000);Session s(core,child.info.dwProcessId);uint8_t zero=0;auto r=request(m,MS_U8,MS_EXACT,&zero,1);
             for(int i=0;i<6;++i)s.ok(r);auto info=s.history();check(info.undo_count<6&&info.used_bytes<=64*1024*1024,"History memory cap not enforced");check(core.undo(s.handle)==MS_OK&&core.count(s.handle)==2'000'000,"Budgeted undo lost real candidates");
         });
         run("Cancelled extended scan preserves candidates/snapshot/history",[&]{
@@ -136,6 +136,8 @@ int wmain(int argc,wchar_t** argv){
         });
         run("Modeless tracing excludes watched pages on every native handle",[&]{
             Memory m(child.info.hProcess,8192);int32_t value=100;m.put(64,value);m.put(4096+64,value);Session s(core,child.info.dwProcessId),other(core,child.info.dwProcessId);
+            auto unknown=request(m,MS_I32,MS_UNKNOWN,nullptr,0,4);other.ok(unknown);
+            check(core.count(other.handle)==2048,"Unknown baseline before tracing");
             void* trace=core.trace_start(child.info.dwProcessId,m.address+64,4,MS_TRACE_ACCESS);check(trace!=nullptr,"Trace attach");
             try {
                 check(core.trace_start(child.info.dwProcessId,m.address+64,4,MS_TRACE_WRITE)==nullptr,"Second same-PID trace accepted");
@@ -145,13 +147,18 @@ int wmain(int argc,wchar_t** argv){
                 check(core.code(s.handle,m.address+64,reinterpret_cast<uint8_t*>(&value),4)==MS_BUSY,"Code patch altered traced page");
                 check(core.read(s.handle,m.address+4096+64,reinterpret_cast<uint8_t*>(&got),4)==MS_OK&&got==100,"Unrelated-page read blocked");
                 auto r=request(m,MS_I32,MS_EXACT,&value,4,4);s.ok(r);s.expect({m.address+4096+64});
+                auto unchanged=unknown;unchanged.mode=MS_UNCHANGED;other.ok(unchanged,true);
+                uint64_t first=0;check(core.count(other.handle)==1024&&core.results(other.handle,0,&first,1)==1&&first==m.address+4096,"Compact rescan touched the tracked page");
                 ms_trace_state state{};core.trace_state(trace,&state);check(state.running&&state.status==MS_OK,"Unrelated browsing disturbed trace");
                 // Simulate the guard-free rearm interval: registration still protects the page.
                 DWORD old=0;check(VirtualProtectEx(child.info.hProcess,reinterpret_cast<LPVOID>(m.address),4096,PAGE_READWRITE,&old)!=0,"Simulate rearm gap");
                 check(core.read(s.handle,m.address+64,reinterpret_cast<uint8_t*>(&got),4)==MS_BUSY,"Guard-free rearm interval leaked read");
                 s.ok(r);s.expect({m.address+4096+64});
+                s.ok(unknown);check(core.count(s.handle)==1024&&core.results(s.handle,0,&first,1)==1&&first==m.address+4096,"Unknown initial consumed the guard-free tracked page");
+                s.ok(unchanged,true);check(core.count(s.handle)==1024,"Compact unchanged consumed the guard-free tracked page");
                 core.trace_stop(trace);core.trace_close(trace);trace=nullptr;
                 check(core.read(s.handle,m.address+64,reinterpret_cast<uint8_t*>(&got),4)==MS_OK,"Detached page remained reserved");
+                check(core.undo(other.handle)==MS_OK&&core.count(other.handle)==2048,"Tracked-page filtering corrupted the retained unknown baseline");
             } catch (...) { core.trace_stop(trace); core.trace_close(trace); throw; }
         });
     }catch(const std::exception& e){std::fprintf(stderr,"SETUP FAILED %s\n",e.what());return 2;}

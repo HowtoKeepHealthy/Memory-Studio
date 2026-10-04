@@ -314,7 +314,8 @@ int wmain(int argc, wchar_t** argv) {
             auto r = request(p, MS_I32, MS_EXACT, &value, sizeof(value), 4);
             ok_scan(s, r);
             p.put<int32_t>(64, 110);
-            auto limited = request(p, MS_I32, MS_UNKNOWN, nullptr, 0, 4);
+            uint8_t filler = 0xCC;
+            auto limited = request(p, MS_U8, MS_EXACT, &filler, sizeof(filler));
             limited.max_results = 2;
             require(core.scan(s.handle, &limited, 0) == MS_LIMIT, "result limit should fail with MS_LIMIT");
             expect(s, {p.address(64), p.address(128), p.address(256)});
