@@ -52,6 +52,7 @@ public static class Program
         }
         var app=new Application { ShutdownMode=ShutdownMode.OnExplicitShutdown };
         app.Resources.MergedDictionaries.Add(new ResourceDictionary { Source=new Uri("Theme.xaml",UriKind.Relative) });
+        AppearanceSettings.TransientSession=true; AppearanceSettings.SuspendSizeMemory=true; ThemeManager.Apply("dark");
         app.Startup+=async (_,_)=>
         {
             try { if(args.Contains("--scroll-only")) await RunScrollRegression(); else await Run(); Lines.Add($"ALL {checks} PASSED"); File.WriteAllLines(Path.Combine(OutputDirectory,"browser-window-results.txt"),Lines); app.Shutdown(0); }
@@ -230,6 +231,14 @@ public static class Program
             var codeEngine=Field<NativeEngine>(code,"_engine"); var dataEngine=Field<NativeEngine>(data,"_engine"); code.Close(); data.Close();
             bool codeClosed=false,dataClosed=false; try {codeEngine.Read(hitIP,1);} catch(ObjectDisposedException){codeClosed=true;} try{dataEngine.Read(watch,1);}catch(ObjectDisposedException){dataClosed=true;}
             Check(codeClosed&&dataClosed&&Field<Button>(trace,"StartButton").IsEnabled,"source browser sessions close and restart becomes available");
+            await trace.AnalyzeSelectedAsync();
+            var analysis=trace.OwnedWindows.OfType<MemoryAnalysisWindow>().Single();
+            await Wait(()=>analysis.Report!=null&&!analysis.IsLoading,"source analysis snapshot");
+            Check(analysis.Report!.CapturedAccesses.Any(access=>access.InstructionPointer==MemoryAnalysisReportService.Hex(hitIP))&&analysis.Report.CodeContexts.Any(context=>context.AnchorAddress==MemoryAnalysisReportService.Hex(hitIP)&&context.AnchorKnown),"source analysis exports actual captured IP and access evidence with a known code anchor");
+            Check(trace.IsEnabled&&!service.State.IsAttached&&analysis.Report.Value.ReadError==null,"source analysis stays modeless and reads restored data only after safe detach");
+            var analysisEngine=Field<NativeEngine>(analysis,"_engine"); analysis.Close();
+            bool analysisClosed=false;try{analysisEngine.Read(watch,1);}catch(ObjectDisposedException){analysisClosed=true;}
+            Check(analysisClosed&&Field<Button>(trace,"StartButton").IsEnabled,"source analysis session releases on close and permits a new trace");
             trace.Close(); await Wait(()=>!trace.IsVisible,"safe trace close");
             var neverStarted=new AccessTraceWindow(pid,watch,4,true); neverStarted.Show(); Check(await neverStarted.CloseSafelyAsync()&&!neverStarted.IsVisible,"never started trace closes safely without reentrant WPF Close");
             using var vm=new MainViewModel(); var main=new MainWindow { DataContext=vm }; Application.Current.MainWindow=main; main.Show(); await vm.AttachToProcessAsync(pid);
@@ -248,7 +257,12 @@ public static class Program
                 await vm.RefreshLiveValuesAsync(); Check(guarded.IsFrozen&&guarded.ValueText=="-777","guarded freeze watch is skipped without being cleared");
                 await vm.WriteRecordsValueAsync(new object[]{unrelated},"4321"); await vm.RefreshLiveValuesAsync(); Check(unrelated.ValueText=="4321"&&BitConverter.ToInt32(vmEngine.Read(unrelatedAddress,4))==4321&&main.IsEnabled&&!vm.IsBusy,"main edits and refreshes unrelated watch while trace stays active");
                 bool guardedRead=false; try {vmEngine.Read(watch,4);}catch(InvalidOperationException){guardedRead=true;} Check(guardedRead,"ordinary engine refuses protected trace page without consuming guard");
-                Field<Button>(modeless,"StopButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent)); await Wait(()=>!modeless.HasProtectedPages,"modeless stop releases page");
+                await vm.HandleRecordActionAsync(guarded,"analyze");
+                var mainAnalysis=main.OwnedWindows.OfType<MemoryAnalysisWindow>().Single();
+                await Wait(()=>mainAnalysis.Report!=null&&!mainAnalysis.IsLoading,"main record analysis collects traced data");
+                Check(!modeless.HasProtectedPages&&modeless.IsVisible&&Field<DataGrid>(modeless,"HitGrid").Items.Count>0&&main.IsEnabled,"main record analysis safely detaches its protected page and preserves the modeless trace results");
+                Check(mainAnalysis.Report!.CapturedAccesses.Count>0&&mainAnalysis.Report.Value.ReadError==null,"main record analysis includes retained access evidence and readable live data");
+                mainAnalysis.Close();
                 int afterStop=BitConverter.ToInt32(vmEngine.Read(watch,4)); Check(afterStop!=-777,"skipped guarded freeze never writes sentinel during active capture");
                 guarded.IsFrozen=false; await vm.RefreshLiveValuesAsync(); Check(guarded.ValueText!="-777"&&guarded.ValueText!="不可读取","Stop with retained results resumes guarded watch refresh");
                 Check(await modeless.CloseSafelyAsync(),"modeless close stops and releases trace"); await vm.RefreshLiveValuesAsync(); Check(!Field<List<(Window,ulong,ulong)>>(vm,"_traces").Any()&&guarded.ValueText!="不可读取","MainVM removes closed trace and continues watch refresh");

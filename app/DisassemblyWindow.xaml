@@ -3,21 +3,21 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Memory Studio · 反汇编" Width="1220" Height="790" MinWidth="960" MinHeight="580"
         WindowStartupLocation="CenterOwner" UseLayoutRounding="True"
-        Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        Background="{DynamicResource BackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
     <Window.Resources>
         <Style x:Key="InstructionCell" TargetType="TextBlock" BasedOn="{StaticResource AddressCell}">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="FontSize" Value="13" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
         <Style x:Key="CodeBytesCell" TargetType="TextBlock" BasedOn="{StaticResource AddressCell}">
-            <Setter Property="Foreground" Value="{StaticResource MutedBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource MutedBrush}" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
         <Style x:Key="BoundaryRow" TargetType="DataGridRow" BasedOn="{StaticResource {x:Type DataGridRow}}">
-            <Style.Triggers><DataTrigger Binding="{Binding IsBoundaryUncertain}" Value="True"><Setter Property="Foreground" Value="#E8BE71" /></DataTrigger></Style.Triggers>
+            <Style.Triggers><DataTrigger Binding="{Binding IsBoundaryUncertain}" Value="True"><Setter Property="Foreground" Value="{DynamicResource WarningBrush}" /></DataTrigger></Style.Triggers>
         </Style>
     </Window.Resources>
     <Grid x:Name="AppearanceRoot" Margin="22,20,22,0">
@@ -28,12 +28,12 @@
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <StackPanel>
-                <TextBlock Text="反汇编查看器" FontSize="22" FontWeight="SemiBold" />
+                <TextBlock Text="反汇编查看器" FontFamily="{DynamicResource HeadingFontFamily}" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="以指定指令为中心连续浏览。反向边界未确定的行标为黄色；有效解码也可能来自数据。"
                            Style="{StaticResource MutedText}" Margin="0,5,0,0" />
             </StackPanel>
-            <Border Grid.Column="1" CornerRadius="5" Background="{StaticResource AccentSoftBrush}" Padding="12,6" VerticalAlignment="Top" Margin="0,4,0,0">
-                <TextBlock Text="INTEL  /  x86 · x64" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource AccentBrush}" />
+            <Border Grid.Column="1" CornerRadius="5" Background="{DynamicResource AccentSoftBrush}" Padding="12,6" VerticalAlignment="Top" Margin="0,4,0,0">
+                <TextBlock Text="INTEL  /  x86 · x64" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource AccentTextBrush}" />
             </Border>
         </Grid>
         <Grid Grid.Row="1" Margin="0,0,0,12">
@@ -74,6 +74,7 @@
                 <Button x:Name="RestoreButton" Content="恢复原码" Style="{StaticResource CompactButton}" Click="RestoreButton_Click" Margin="6,0,0,0" />
                 <Button x:Name="UndoButton" Content="撤销" Style="{StaticResource CompactButton}" Click="UndoButton_Click" Margin="6,0,0,0" />
                 <Button x:Name="CopyButton" Content="复制" Style="{StaticResource CompactButton}" Click="CopyButton_Click" Margin="6,0,0,0" />
+                <Button x:Name="AnalysisButton" Content="分析 / 导出" Style="{StaticResource CompactButton}" Click="AnalysisButton_Click" Margin="6,0,0,0" ToolTip="汇集指令、内存和追踪证据，导出可供 AI 分析的上下文" />
             </StackPanel>
         </Grid>
         <Border Grid.Row="4" Style="{StaticResource Card}">

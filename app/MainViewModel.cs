@@ -91,7 +91,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public ResultRow? SelectedResult { get => _selectedResult; set { if (Set(ref _selectedResult, value)) RefreshCommands(); } }
     public WatchRow? SelectedWatch { get => _selectedWatch; set { if (Set(ref _selectedWatch, value)) { EditValueText = value?.ValueText ?? ""; RefreshCommands(); } } }
     public Option SelectedType { get => _selectedType; set { if (value != null && Set(ref _selectedType, value)) RefreshCommands(); } }
-    public Option SelectedScanMode { get => _selectedScanMode; set { if (value != null && Set(ref _selectedScanMode, value)) RefreshCommands(); } }
+    public Option SelectedScanMode { get => _selectedScanMode; set { if (value != null && Set(ref _selectedScanMode, value)) { Notify(nameof(SearchValueEnabled)); Notify(nameof(SearchUpperEnabled)); RefreshCommands(); } } }
     public string SearchValue { get => _searchValue; set => Set(ref _searchValue, value); }
     public string StartAddress { get => _startAddress; set => Set(ref _startAddress, value); }
     public string EndAddress { get => _endAddress; set => Set(ref _endAddress, value); }
@@ -253,6 +253,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (status != 0) { string error = engine.LastScanError; throw new InvalidOperationException(status == 6 && error.StartsWith("Result limit", StringComparison.OrdinalIgnoreCase) ? "普通扫描候选超过 2,000,000 个。请缩小范围或使用更精确的条件；也可先用未知初始值快照逐步筛选，上次结果已保留。" : error); }
             _resultOverrides.Clear();
             RememberScanUi(previousUi);
+            if (!next) _resultUndoScope = Guid.NewGuid();
             _scanType = type; _scanSize = size; _hasScan = true; _showingAllResults = false; _page = 0; _total = engine.Count;
             _hasUnknownSnapshot = engine.History.HasUnknownSnapshot;
             await LoadPageAsync(); ScanProgress = 100;
@@ -398,6 +399,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 StatusText = $"已复制 {selection.Length:N0} 条记录。"; return;
             }
             if (IsBusy) { StatusText = "当前操作尚未完成，请稍后编辑记录。"; return; }
+            if (action == "undo-record") { await UndoRecordsAsync(selection); return; }
             if (action is "edit-value" or "edit-type" or "edit-description")
             {
                 var data = RecordData(selection[0]);
@@ -408,7 +410,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 if (edited != null) await ApplyRecordsEditAsync(selection, kind, edited);
                 return;
             }
-            if (action is "hex" or "disassemble" or "trace-write" or "trace-access" or "edit-address")
+            if (action is "hex" or "disassemble" or "trace-write" or "trace-access" or "edit-address" or "analyze")
             { StatusText = "此操作请只选择一条记录。"; return; }
             int completed = 0, failed = 0;
             IsBusy = true;
@@ -516,7 +518,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 try
                 {
                     byte[] bytes = plan.Bytes;
-                    if (kind == RecordEditKind.Value) await Task.Run(() => _editHistory!.Write(engine, plan.Address, bytes, "写入记录"));
+                    if (kind == RecordEditKind.Value) await Task.Run(() => _editHistory!.Write(engine, plan.Address, bytes, "写入记录", recordKey: RecordUndoKey(plan.Row)));
                     else if (kind == RecordEditKind.Type) bytes = await Task.Run(() => engine.Read(plan.Address, plan.Size));
                     if (_disposed) break;
                     if (plan.Row is ResultRow result)
@@ -543,7 +545,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             }
             StatusText = $"{(cancellation.IsCancellationRequested ? "已停止" : "批量编辑完成")}：成功 {completed:N0} / {plans.Length:N0} 项" +
                 (failed > 0 ? $"，失败 {failed:N0} 项；{firstError}" : "。");
-            if (changedMetadata.Count > 0) RememberRecords("批量修改记录", changedMetadata);
+            if (changedMetadata.Count > 0) RememberRecords("批量修改记录", changedMetadata, kind);
         }
         finally { _batchCancellation = null; IsBusy = false; }
     }
@@ -565,6 +567,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 Clipboard.SetText(text); StatusText = "已复制到剪贴板。"; return;
             }
             if (IsBusy) { StatusText = "当前操作尚未完成，请稍后编辑记录。"; return; }
+            if (action == "undo-record") { await UndoRecordsAsync([row]); return; }
             var engine = _engine ?? throw new InvalidOperationException("请先连接进程。");
             if (action.StartsWith("edit-", StringComparison.Ordinal))
             {
@@ -600,6 +603,32 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                     break;
                 case "hex": ShowHexViewer(data.Address); break;
                 case "disassemble": ShowDisassembly(data.Address); break;
+                case "analyze":
+                    int analysisPid = _attachedProcessId;
+                    var evidence = new List<MemoryTraceEvidence>();
+                    ulong dataLast = data.Address > ulong.MaxValue - (ulong)Math.Max(1, data.Size) + 1 ? ulong.MaxValue : data.Address + (ulong)Math.Max(1, data.Size) - 1;
+                    foreach (var entry in _traces.ToArray())
+                        if (entry.Window is AccessTraceWindow access)
+                        {
+                            var hits = access.HasProtectedPages && data.Address <= entry.LastPage && dataLast >= entry.FirstPage
+                                ? await access.StopAndSnapshotForAnalysisAsync() : access.SnapshotCapturedHits();
+                            foreach (var hit in hits)
+                            {
+                                var captured = MemoryTraceEvidence.FromHit(analysisPid, hit);
+                                if (captured.MemoryWidth > 0 && (captured.MemoryAddress <= data.Address
+                                    ? data.Address - captured.MemoryAddress < (ulong)captured.MemoryWidth
+                                    : captured.MemoryAddress - data.Address < (ulong)data.Size)) evidence.Add(captured);
+                            }
+                        }
+                    var analysisReader = new NativeEngine(analysisPid);
+                    try
+                    {
+                        var analysisRequest = new MemoryAnalysisRequest(analysisPid, data.Address, data.Type, data.Size,
+                            (row as WatchRow)?.Description ?? "扫描结果", TraceEvidence: evidence);
+                        new MemoryAnalysisWindow(analysisReader, analysisRequest, ownsEngine: true) { Owner = Application.Current.MainWindow }.Show();
+                    }
+                    catch { analysisReader.Dispose(); throw; }
+                    break;
                 case "trace-write":
                 case "trace-access":
                     if (IsPaused) { _processControl!.Resume(); Notify(nameof(IsPaused)); Notify(nameof(PauseButtonText)); }
@@ -622,6 +651,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
     public async Task ApplyRecordEditAsync(object row, RecordEditKind kind, RecordEditResult edited)
     {
         if (_disposed || IsBusy) throw new InvalidOperationException("当前无法编辑记录。");
+        if (kind == RecordEditKind.Description && row is not WatchRow) throw new ArgumentException("仅地址表支持描述。");
         var data = RecordData(row);
         var before = CaptureRecord(row);
         var request = new RecordEditRequest(kind, data.Value, data.Type, data.Size, $"0x{data.Address:X16}", edited.Hexadecimal);
@@ -629,7 +659,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
         if (kind == RecordEditKind.Description)
         {
             if (row is WatchRow named) named.Description = validated.Text;
-            RememberRecords("修改描述", [before]);
+            RememberRecords("修改描述", [before], kind);
             StatusText = "描述已更新。"; return;
         }
         var engine = _engine ?? throw new InvalidOperationException("请先连接进程。");
@@ -645,7 +675,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
             if (kind == RecordEditKind.Value)
             {
                 bytes = ValueCodec.Parse(type, validated.Text, edited.Hexadecimal);
-                await Task.Run(() => _editHistory!.Write(engine, address, bytes, "写入记录"));
+                await Task.Run(() => _editHistory!.Write(engine, address, bytes, "写入记录", recordKey: RecordUndoKey(row)));
             }
             else bytes = await Task.Run(() => engine.Read(address, size));
             if (_disposed) return;
@@ -669,7 +699,7 @@ public sealed partial class MainViewModel : ObservableObject, IDisposable
                 RecordEditKind.Address when row is ResultRow => "这一行的地址已更新；重新扫描会生成新的结果列表。",
                 _ => "记录已更新，冻结已关闭。"
             };
-            if (kind != RecordEditKind.Value) RememberRecords("修改记录", [before]);
+            if (kind != RecordEditKind.Value) RememberRecords("修改记录", [before], kind);
         }
         finally { IsBusy = false; }
     }

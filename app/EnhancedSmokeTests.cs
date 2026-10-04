@@ -35,9 +35,12 @@ internal static class EnhancedSmokeTests
             vm.Watches.Add(second);
             await vm.WriteRecordsValueAsync([first, second], "9999");
             check(Marshal.ReadInt32(block, 16) == 9999 && Marshal.ReadInt32(block, 20) == 9999, "Toolbar batch write changes every selected address");
-            first.IsFrozen = true; await vm.UndoEditAsync();
+            first.IsFrozen = true; await vm.UndoRecordsAsync([first]);
             await Task.Delay(600);
-            check(Marshal.ReadInt32(block, 16) == 400 && Marshal.ReadInt32(block, 20) == 470 && first.IsFrozen && first.FrozenValue.SequenceEqual(BitConverter.GetBytes(470)), "Batch undo restores each original value and updates freeze targets");
+            check(Marshal.ReadInt32(block, 16) == 9999 && Marshal.ReadInt32(block, 20) == 470 && first.IsFrozen && first.FrozenValue.SequenceEqual(BitConverter.GetBytes(470)), "Record undo restores only the selected batch member and its freeze target");
+            check(vm.CanUndoRecord(second), "Unselected batch member keeps its own undo history");
+            await vm.UndoRecordsAsync([second]);
+            check(Marshal.ReadInt32(block, 16) == 400, "Remaining batch member can be undone independently");
             first.IsFrozen = false;
             first.IsFrozen = true;
             using (var browserEngine = new NativeEngine(Environment.ProcessId))
@@ -51,8 +54,10 @@ internal static class EnhancedSmokeTests
             }
             first.IsFrozen = false;
             await vm.ApplyRecordsEditAsync([first, second], RecordEditKind.Type, new("", 0, 1));
-            await vm.UndoEditAsync();
-            check(first.Type == 2 && second.Type == 2 && first.Size == 4 && second.Size == 4, "Undo restores a batch of record types");
+            await vm.UndoRecordsAsync([first]);
+            check(first.Type == 2 && second.Type == 0 && first.Size == 4 && second.Size == 1, "Type undo acts only on the selected record");
+            await vm.UndoRecordsAsync([second]);
+            check(second.Type == 2 && second.Size == 4, "Other record metadata remains independently undoable");
             vm.SearchValue = "470"; vm.SearchUpperValue = "600"; vm.SelectedType = vm.TypeOptions.Single(t => t.Value == 2); vm.SelectedWatch = first;
             vm.EditValueText = "470"; vm.HexDisplayEnabled = true;
             check(vm.SearchValue == "0x000001D6" && vm.EditValueText == "0x000001D6" && first.ValueText == "0x000001D6", "Radix switching converts search, write and displayed values together");
@@ -74,6 +79,7 @@ internal static class EnhancedSmokeTests
             CeTableCodec.Save(table, [pointer]); var imported = CeTableCodec.Load(table);
             check(imported.Entries.Count == 1 && imported.Entries[0].Offsets!.SequenceEqual(pointer.PointerOffsets) && imported.Entries[0].Size == 16, "CT pointer ordering and Unicode byte lengths round-trip");
             check(!ElevationService.TryRelaunch(["--no-elevate"]) && !ElevationService.TryRelaunch(["--self-test"]), "Automated checks and explicit normal launch never trigger UAC");
+            await RecordUndoSmokeTests.RunAsync(check);
         }
         finally { vm?.Dispose(); Marshal.FreeHGlobal(block); if (File.Exists(table)) File.Delete(table); }
     }

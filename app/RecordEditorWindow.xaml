@@ -4,7 +4,7 @@
         Title="Memory Studio · 编辑记录" Width="540" SizeToContent="Height"
         MinHeight="290" MaxHeight="650" ResizeMode="NoResize"
         WindowStartupLocation="CenterOwner" ShowInTaskbar="False" UseLayoutRounding="True"
-        Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        Background="{DynamicResource BackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
     <Grid Margin="26,23,26,24">
         <Grid.RowDefinitions>
@@ -38,7 +38,7 @@
         </StackPanel>
         <TextBlock Grid.Row="3" x:Name="HintLabel" Style="{StaticResource MutedText}" Margin="0,12,0,0"
                    FontSize="11" TextWrapping="Wrap" LineHeight="19" />
-        <TextBlock Grid.Row="4" x:Name="ErrorLabel" Foreground="#FFBF8A" Margin="0,10,0,0"
+        <TextBlock Grid.Row="4" x:Name="ErrorLabel" Foreground="{DynamicResource ErrorBrush}" Margin="0,10,0,0"
                    FontSize="12" TextWrapping="Wrap" MinHeight="18" AutomationProperties.LiveSetting="Polite" />
         <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,15,0,0">
             <Button Content="取消" IsCancel="True" MinWidth="84" Margin="0,0,9,0" />

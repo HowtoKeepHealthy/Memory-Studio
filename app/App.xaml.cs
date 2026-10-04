@@ -15,6 +15,18 @@ public partial class App : Application
     {
         base.OnStartup(e);
         if (ElevationService.TryRelaunch(e.Args)) { Shutdown(); return; }
+        bool transient = e.Args.Contains("--screenshot") || e.Args.Contains("--self-test");
+        AppearanceSettings.TransientSession = transient;
+        AppearanceSettings.SuspendSizeMemory = transient;
+        string? requestedTheme = e.Args.FirstOrDefault(arg => arg.StartsWith("--theme=", StringComparison.Ordinal))?[8..];
+        int themeArgument = Array.IndexOf(e.Args, "--theme");
+        if (themeArgument >= 0 && themeArgument + 1 < e.Args.Length) requestedTheme = e.Args[themeArgument + 1];
+        if (transient) ThemeManager.Apply(requestedTheme ?? "dark");
+        else
+        {
+            ThemeManager.Initialize();
+            if (requestedTheme is not null) ThemeManager.Apply(requestedTheme);
+        }
         if (e.Args.Length > 0 && e.Args[0] == "--self-test")
         {
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -23,7 +35,6 @@ public partial class App : Application
         }
         if (!e.Args.Contains("--screenshot"))
         {
-            AppearanceSettings.Initialize();
             EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent,
                 new RoutedEventHandler((sender, _) => { if (sender is Window appearanceWindow) AppearanceSettings.Apply(appearanceWindow); }));
         }

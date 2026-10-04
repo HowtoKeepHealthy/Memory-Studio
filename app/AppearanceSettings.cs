@@ -15,6 +15,8 @@ public sealed class AppearancePreferences : INotifyPropertyChanged
 {
     private double _scalePercent = 100, _fontSize = 13;
     private bool _rememberWindowSize = true;
+    private string _themeId = "dark";
+    public string ThemeId { get => _themeId; set => Update(ref _themeId, ThemeManager.Normalize(value)); }
     public double ScalePercent { get => _scalePercent; set => Update(ref _scalePercent, double.IsFinite(value) ? Math.Clamp(value, 60, 150) : 100); }
     public double FontSize { get => _fontSize; set => Update(ref _fontSize, double.IsFinite(value) ? Math.Clamp(value, 10, 20) : 13); }
     public bool RememberWindowSize { get => _rememberWindowSize; set => Update(ref _rememberWindowSize, value); }
@@ -50,6 +52,8 @@ public static class AppearanceSettings
     public static event EventHandler? Changed;
     /// <summary>Screenshot and test hosts may suppress restoring or saving window geometry.</summary>
     public static bool SuspendSizeMemory { get; set; }
+    /// <summary>Automated screenshot/test sessions neither load nor save personal preferences.</summary>
+    public static bool TransientSession { get; set; }
 
     public static void Initialize()
     {
@@ -57,12 +61,14 @@ public static class AppearanceSettings
         _initialized = true;
         try
         {
-            if (File.Exists(SettingsPath)) Current = JsonSerializer.Deserialize<AppearancePreferences>(File.ReadAllText(SettingsPath)) ?? new();
+            if (!TransientSession && File.Exists(SettingsPath)) Current = JsonSerializer.Deserialize<AppearancePreferences>(File.ReadAllText(SettingsPath)) ?? new();
+            if (TransientSession) Current.ThemeId = ThemeManager.CurrentThemeId;
             Current.Windows ??= [];
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException) { Current = new(); }
-        Current.PropertyChanged += (_, _) =>
+        Current.PropertyChanged += (_, args) =>
         {
+            if (args.PropertyName == nameof(AppearancePreferences.ThemeId)) ThemeManager.Apply(Current.ThemeId);
             foreach (var pair in OpenWindows.ToArray()) UpdateWindow(pair.Key, pair.Value);
             QueueSave();
             Changed?.Invoke(null, EventArgs.Empty);
@@ -181,7 +187,7 @@ public static class AppearanceSettings
     private static void QueueSave() { SaveTimer.Stop(); SaveTimer.Start(); }
     private static void Save()
     {
-        if (!_initialized) return;
+        if (!_initialized || TransientSession) return;
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(SettingsPath)!);

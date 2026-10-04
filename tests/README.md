@@ -24,7 +24,7 @@
 
 先构建 `memory_core.dll`；测试失败返回退出码 1，无法装载 DLL 或初始化失败返回 2，全部通过返回 0。
 
-运行根目录 `build.cmd -Test` 会执行原生基础/扫描扩展/未知初始值专项，以及应用内的 `SmokeTests` / `FeatureSmokeTests` / `EnhancedSmokeTests` / `UnknownScanSmokeTests`，报告写入 `artifacts/managed-test.txt`。这些检查覆盖真实 WPF ViewModel 扫描、实时结果更新、扫描基准撤销、批量修改撤销、跨浏览器冻结值同步、进制转换、浮点容差、.CT 数据往返、混合类型批量验证、跨页全选，以及 x86/x64 指令解码和不可读页边界。
+运行根目录 `build.cmd -Test` 会执行原生基础/扫描扩展/未知初始值专项，以及应用内的 `SmokeTests` / `FeatureSmokeTests` / `EnhancedSmokeTests` / `RecordUndoSmokeTests` / `UnknownScanSmokeTests`，报告写入 `artifacts/managed-test.txt`。这些检查覆盖真实 WPF ViewModel 扫描、实时结果更新、扫描基准撤销、按记录及多选独立撤销、数值/属性交错编辑、结果跨页历史、重叠修改的失败保留与重试、目标自行改变数值后的撤销、跨浏览器冻结值同步、进制转换、浮点容差、.CT 数据往返、混合类型批量验证、跨页全选，以及 x86/x64 指令解码和不可读页边界。
 
 `native_unknown_scan.cpp` 使用自建隐藏子进程的 12 MiB 内存验证超过 300 万个 Int32 候选、分页尾部、后续未变化和精确扫描、变化/增减、撤销时的比较基准、非对齐跨块和不可读空隙、首次/后续取消、只读区域，以及临时目录失效时的事务保留。应用专项另验证空输入/空浮点容差、超大快照全选提示及界面终止地址包含最后一个字节。原生 C ABI 范围仍为左闭右开。
 
@@ -36,9 +36,11 @@ powershell -ExecutionPolicy Bypass -File scripts/test-browser-windows.ps1
 powershell -ExecutionPolicy Bypass -File scripts/test-browser-windows.ps1 -ScrollOnly
 powershell -ExecutionPolicy Bypass -File scripts/test-browser-windows.ps1 -HistoryOverlapOnly
 powershell -ExecutionPolicy Bypass -File scripts/test-wpf-interface.ps1
+powershell -ExecutionPolicy Bypass -File scripts/test-theme.ps1
+powershell -ExecutionPolicy Bypass -File scripts/test-memory-analysis.ps1
 ```
 
-进程工具专项包含 32 个真实 x64/WOW64 暂停恢复检查与 24 个模块指针链扫描检查；浏览窗口专项包含 36 个真实 WPF 交互检查，验证指令中心定位、滚轮上下加载、HEX/代码/NASM 补丁、来源跳转、主窗口不被追踪阻塞及退出时安全脱离；独立真实鼠标滚轮专项包含 11 个顶部加载、不可读边界重试和连续向上浏览检查；重叠撤销专项包含 4 个失败保留/重试检查；主界面专项包含 99 个焦点行多选、其他行/空白取消选择、双击批量编辑、真实内存工具栏写入、未知值流程、固定侧边布局和缩放检查。源码位于 `tests/process_control`、`tests/browser_windows` 和 `tests/wpf_interface`，输出、fixture、临时项目和报告均在 `artifacts` 中。
+进程工具专项包含 32 个真实 x64/WOW64 暂停恢复检查与 24 个模块指针链扫描检查；浏览窗口专项包含 41 个真实 WPF 交互检查，验证指令中心定位、滚轮上下加载、HEX/代码/NASM 补丁、来源跳转、主窗口不被追踪阻塞、分析时停止追踪并保留真实捕获及退出时安全脱离；独立真实鼠标滚轮专项包含 11 个顶部加载、不可读边界重试和连续向上浏览检查；重叠撤销专项包含 4 个失败保留/重试检查；主界面专项包含 107 个焦点行多选、其他行/空白取消选择、双击批量编辑、真实内存工具栏写入和按所选撤销、未知值输入禁用、地址表高度增长、固定侧边布局和缩放检查。主题专项包含 134 个深浅主题切换、菜单及按钮文字、冻结资源更新、字体/尺寸保持和个人设置不受测试影响的检查；地址分析专项包含 30 个离线汇编语义、模块位置、匹配捕获证据、JSON 精度、报告导出内容和 modeless 窗口检查。源码位于 `tests/process_control`、`tests/browser_windows`、`tests/wpf_interface`、`tests/theme` 和 `tests/memory_analysis`，输出、fixture、临时项目和报告均在 `artifacts` 中。
 
 访问来源测试会启动隐藏的自建 `DemoTarget.exe --trace-test` 子进程，检查准确读写指令、同页相邻地址过滤、重复命中聚合、停止后页面保护恢复及目标继续执行、再次附加写入追踪，以及目标退出后会话释放。测试只终止它自己创建的子进程。窗口拾取测试使用测试窗口的 HWND 验证 PID、子窗口归属与无效目标过滤。
 

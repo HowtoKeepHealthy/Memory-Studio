@@ -15,10 +15,13 @@ public sealed partial class MainViewModel
     private ResultRow[] _visibleResults = [];
     private readonly List<(Window Window, ulong FirstPage, ulong LastPage)> _traces = [];
     private readonly List<ScanUiState> _scanUiHistory = [];
-    private readonly List<(DateTime At, string Description, RecordState[] States)> _recordHistory = [];
+    private readonly List<RecordUndoStep> _recordHistory = [];
+    private Guid _resultUndoScope = Guid.NewGuid();
     private readonly HashSet<WatchRow> _subscribedWatches = [];
-    private sealed record ScanUiState(int Type, int Size, bool HasScan, int Mode, string Value, string Upper, ulong Page,
+    private sealed record ScanUiState(int Type, int Size, bool HasScan, int Mode, string Value, string Upper, ulong Page, Guid UndoScope,
         Dictionary<ulong, (ulong Address, int Type, int Size)> Overrides);
+    private sealed record ResultUndoKey(Guid Scan, ulong SourceAddress);
+    private sealed record RecordUndoStep(object Key, long Sequence, long Group, string Description, RecordEditKind Kind, RecordState Before);
     private sealed record RecordState(object Row, ulong Address, int Type, int Size, byte[] Bytes, string Description,
         string Expression, int[] Offsets, bool Frozen);
     public ICommand AddManualAddressCommand { get; private set; } = null!;
@@ -35,6 +38,8 @@ public sealed partial class MainViewModel
     public string FloatToleranceText { get => _floatToleranceText; set => Set(ref _floatToleranceText, value); }
     public string RelativeToleranceText { get => _relativeToleranceText; set => Set(ref _relativeToleranceText, value); }
     public string SearchUpperValue { get => _searchUpperValue; set => Set(ref _searchUpperValue, value); }
+    public bool SearchValueEnabled => SelectedScanMode.Value is 0 or >= 6;
+    public bool SearchUpperEnabled => SelectedScanMode.Value == 8;
     public bool HexDisplayEnabled
     {
         get => _hexDisplayEnabled;
@@ -65,7 +70,7 @@ public sealed partial class MainViewModel
     {
         Watches.CollectionChanged += (_, _) => SyncWatchRegistrations();
         AddManualAddressCommand = Command(AddManualAddress, () => IsAttached && !IsBusy);
-        UndoEditCommand = Async(UndoEditAsync, () => IsAttached && !IsBusy && (_editHistory?.CanUndo == true || _recordHistory.Count > 0));
+        UndoEditCommand = Async(UndoEditAsync, () => CanUndoRecord((object?)SelectedWatch ?? SelectedResult!));
         UndoScanCommand = Async(UndoScanAsync, () => IsAttached && !IsBusy && _engine?.History.CanUndo == true);
         TogglePauseCommand = Async(TogglePauseAsync, () => IsAttached && !IsBusy && _attachedProcessId != Environment.ProcessId && !_traces.Any(t => t.Window is AccessTraceWindow trace && trace.HasProtectedPages));
         OpenPointerScannerCommand = Command(() =>
@@ -132,13 +137,13 @@ public sealed partial class MainViewModel
     private void InitializeProcessFeatures(int pid)
     {
         _processControl?.Dispose(); _processControl = pid == Environment.ProcessId ? null : new ProcessControlService(pid);
-        _editHistory = MemoryEditHistory.ForProcess(pid); _recordHistory.Clear(); _scanUiHistory.Clear(); _visibleResults = [];
+        _editHistory = MemoryEditHistory.ForProcess(pid); _recordHistory.Clear(); _scanUiHistory.Clear(); _visibleResults = []; _resultUndoScope = Guid.NewGuid();
         SyncWatchRegistrations();
         if (EndAddress is "" or "0xFFFFFFFF" or "0x00007FFFFFFFFFFF" or "0x100000000" or "0x0000800000000000")
             try { EndAddress = ProcessInspector.DetectArchitecture(pid).Bitness == 32 ? "0xFFFFFFFF" : "0x00007FFFFFFFFFFF"; } catch { EndAddress = "0x00007FFFFFFFFFFF"; }
         Notify(nameof(IsPaused)); Notify(nameof(PauseButtonText)); RefreshCommands();
     }
-    private ScanUiState CaptureScanUi() => new(_scanType, _scanSize, _hasScan, SelectedScanMode.Value, SearchValue, SearchUpperValue, _page,
+    private ScanUiState CaptureScanUi() => new(_scanType, _scanSize, _hasScan, SelectedScanMode.Value, SearchValue, SearchUpperValue, _page, _resultUndoScope,
         _resultOverrides.ToDictionary(p => p.Key, p => p.Value));
     private void RememberScanUi(ScanUiState state)
     {
@@ -163,6 +168,7 @@ public sealed partial class MainViewModel
             if (_page * PageSize >= _total) _page = 0;
             if (state != null)
             {
+                _resultUndoScope = state.UndoScope;
                 SearchValue = state.Value; SearchUpperValue = state.Upper; SelectedScanMode = ScanModes.Single(m => m.Value == state.Mode);
                 foreach (var pair in state.Overrides) _resultOverrides[pair.Key] = pair.Value;
             }
@@ -179,59 +185,91 @@ public sealed partial class MainViewModel
         WatchRow w => new(w, w.Address, w.Type, w.Size, w.FrozenValue.ToArray(), w.Description, w.AddressExpression, w.PointerOffsets.ToArray(), w.IsFrozen),
         _ => throw new ArgumentException("未知记录。")
     };
-    private void RememberRecords(string description, IEnumerable<RecordState> states)
+    private object RecordUndoKey(object row) => row switch
+    {
+        ResultRow result => new ResultUndoKey(_resultUndoScope, result.SourceAddress),
+        WatchRow watch => watch,
+        _ => throw new ArgumentException("只能撤销扫描结果或地址表记录。")
+    };
+    private void RememberRecords(string description, IEnumerable<RecordState> states, RecordEditKind kind)
     {
         var snapshot = states.ToArray();
         if (snapshot.Length == 0) return;
-        _recordHistory.Add((DateTime.UtcNow, description, snapshot));
+        long group = _editHistory!.AllocateRecordSequence();
+        foreach (var state in snapshot) _recordHistory.Add(new(RecordUndoKey(state.Row), _editHistory.AllocateRecordSequence(), group, description, kind, state));
         // Keep a bounded metadata history alongside the bounded native memory history.
-        long bytes = _recordHistory.Sum(entry => entry.States.Sum(s => 128L + s.Bytes.Length + s.Description.Length * 2L));
-        while (_recordHistory.Count > 1 && (_recordHistory.Count > 100 || bytes > 32L * 1024 * 1024))
+        long Size(RecordUndoStep entry) => 128L + entry.Before.Bytes.Length + entry.Before.Description.Length * 2L + entry.Before.Expression.Length * 2L + entry.Before.Offsets.Length * 4L;
+        long bytes = _recordHistory.Sum(Size);
+        int groups = _recordHistory.Select(e => e.Group).Distinct().Count();
+        while (groups > 1 && (groups > 100 || bytes > 32L * 1024 * 1024))
         {
-            bytes -= _recordHistory[0].States.Sum(s => 128L + s.Bytes.Length + s.Description.Length * 2L); _recordHistory.RemoveAt(0);
+            long oldest = _recordHistory[0].Group;
+            bytes -= _recordHistory.Where(e => e.Group == oldest).Sum(Size); _recordHistory.RemoveAll(e => e.Group == oldest); --groups;
         }
         RefreshCommands();
     }
-    public async Task UndoEditAsync()
+    public bool CanUndoRecord(object? row) => !_disposed && IsAttached && !IsBusy && row is ResultRow or WatchRow &&
+        (_editHistory!.LatestRecordSequence(RecordUndoKey(row)) > 0 || _recordHistory.Any(step => Equals(step.Key, RecordUndoKey(row))));
+    public bool CanUndoRecords(IEnumerable<object> rows) => rows.Any(CanUndoRecord);
+    public Task UndoEditAsync()
     {
-        if (_engine == null || IsBusy) return;
+        object? row = (object?)SelectedWatch ?? SelectedResult;
+        return row == null ? Task.CompletedTask : UndoRecordsAsync([row]);
+    }
+    public async Task UndoRecordsAsync(IReadOnlyList<object> rows)
+    {
+        if (_engine == null || IsBusy || _disposed) return;
+        var selection = rows.Select(row => (Row: row, Key: RecordUndoKey(row))).DistinctBy(p => p.Key).ToArray();
+        var plans = selection.Select(p =>
+        {
+            var metadata = _recordHistory.Where(step => Equals(step.Key, p.Key)).MaxBy(step => step.Sequence);
+            long memory = _editHistory!.LatestRecordSequence(p.Key);
+            return (p.Row, p.Key, Metadata: metadata != null && metadata.Sequence > memory ? metadata : null, HasMemory: memory > 0 && (metadata == null || memory > metadata.Sequence));
+        }).ToArray();
+        var errors = new List<string>(); int attempted = 0, restored = 0;
         IsBusy = true;
         try
         {
             if (_watchJob != null) await _watchJob;
-            if (_recordHistory.Count > 0 && (_editHistory?.CanUndo != true || _recordHistory[^1].At >= _editHistory.LatestTimestamp))
+            object[] memoryKeys = plans.Where(p => p.HasMemory).Select(p => p.Key).ToArray();
+            if (memoryKeys.Length > 0)
             {
-                var entry = _recordHistory[^1]; _recordHistory.RemoveAt(_recordHistory.Count - 1);
-                foreach (var state in entry.States)
+                var undo = await Task.Run(() => _editHistory!.UndoRecords(_engine, memoryKeys));
+                attempted += undo.Attempted; restored += undo.Restored; errors.AddRange(undo.Errors);
+            }
+            foreach (var plan in plans.Where(p => p.Metadata != null).OrderByDescending(p => p.Metadata!.Sequence))
+            {
+                ++attempted;
+                var step = plan.Metadata!; var state = step.Before;
+                try
                 {
-                    if (state.Row is ResultRow result)
+                    _editHistory!.SynchronizeRecord(() =>
                     {
-                        result.Apply(state.Address, state.Type, state.Size, state.Bytes);
-                        _resultOverrides[result.SourceAddress] = (state.Address, state.Type, state.Size);
-                    }
-                    else if (state.Row is WatchRow watch)
-                    {
-                        watch.IsFrozen = false; watch.Address = state.Address; watch.Type = state.Type; watch.Size = state.Size;
-                        watch.FrozenValue = state.Bytes; watch.Description = state.Description; watch.AddressExpression = state.Expression;
-                        watch.PointerOffsets = state.Offsets; watch.ValueText = FormatValue(state.Type, state.Bytes); watch.IsFrozen = state.Frozen;
-                    }
+                        if (step.Kind == RecordEditKind.Description) { ((WatchRow)plan.Row).Description = state.Description; return; }
+                        // Restore record interpretation against current bytes: metadata undo must
+                        // never re-freeze an old value over another record's later memory write.
+                        byte[] bytes = _engine.Read(state.Address, state.Size);
+                        if (plan.Row is ResultRow result)
+                        {
+                            result.Apply(state.Address, state.Type, state.Size, bytes);
+                            _resultOverrides[result.SourceAddress] = (state.Address, state.Type, state.Size);
+                        }
+                        else if (plan.Row is WatchRow watch)
+                        {
+                            watch.IsFrozen = false; watch.Address = state.Address; watch.Type = state.Type; watch.Size = state.Size;
+                            watch.FrozenValue = bytes; watch.AddressExpression = state.Expression; watch.PointerOffsets = state.Offsets.ToArray();
+                            watch.ValueText = FormatValue(state.Type, bytes); watch.IsFrozen = state.Frozen;
+                        }
+                    });
+                    _recordHistory.Remove(step); ++restored;
                 }
-                StatusText = "已撤销：" + entry.Description;
+                catch (Exception ex) { errors.Add($"0x{state.Address:X}: {ex.Message}；记录历史已保留。"); }
             }
-            else if (_editHistory?.CanUndo == true)
-            {
-                var undo = await Task.Run(() => _editHistory.Undo(_engine));
-                foreach (var change in undo.Changes)
-                    foreach (var watch in Watches.Where(w => w.Address < change.Address + (ulong)change.Before.Length && change.Address < w.Address + (ulong)w.Size))
-                    {
-                        try { watch.FrozenValue = _engine.Read(watch.Address, watch.Size); watch.ValueText = FormatValue(watch.Type, watch.FrozenValue); }
-                        catch { watch.IsFrozen = false; }
-                    }
-                StatusText = $"撤销 {undo.Description}：恢复 {undo.Restored:N0}/{undo.Attempted:N0} 处。" + (undo.Errors.Count > 0 ? string.Join("；", undo.Errors.Take(3)) : "");
-            }
+            StatusText = attempted == 0 ? "所选记录没有可撤销的编辑。" : $"已为所选记录撤销最近一次编辑：恢复 {restored:N0}/{attempted:N0} 条。" + string.Join("；", errors.Take(3));
         }
         finally { IsBusy = false; }
         await RefreshLiveValuesAsync();
+        if (SelectedWatch != null) EditValueText = SelectedWatch.ValueText;
     }
     public Task WriteRecordsValueAsync(IReadOnlyList<object> rows, string value)
     {

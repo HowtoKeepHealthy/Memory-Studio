@@ -32,7 +32,9 @@ internal static class Program
         {
             var application = new Application { ShutdownMode = ShutdownMode.OnExplicitShutdown };
             application.Resources.MergedDictionaries.Add(new ResourceDictionary { Source = new Uri("pack://application:,,,/WpfInterfaceCheck;component/Theme.xaml") });
+            AppearanceSettings.TransientSession = true;
             AppearanceSettings.SuspendSizeMemory = true;
+            ThemeManager.Apply("dark");
             EventManager.RegisterClassHandler(typeof(Window), FrameworkElement.LoadedEvent, new RoutedEventHandler((sender, _) =>
             {
                 if (sender is RecordEditorWindow editor)
@@ -155,6 +157,17 @@ internal static class Program
         Invoke("WriteFullSelected_Click", _window, new RoutedEventArgs());
         WaitUntil(() => !_vm.IsBusy, 5000);
         Require(((WatchRow)fullGrid.Items[0]).ValueText == "444" && ((WatchRow)fullGrid.Items[1]).ValueText == "555" && ((WatchRow)fullGrid.Items[2]).ValueText == "555" && Marshal.ReadInt32(_fixtureMemory) == 444 && Marshal.ReadInt32(_fixtureMemory, 4) == 555 && Marshal.ReadInt32(_fixtureMemory, 8) == 555, "full toolbar writes its own selected group into real memory independently of compact grid selection");
+        var undoMenu = (ContextMenu)Invoke("BuildRecordMenu", fullGrid, new object[] { fullGrid.Items[0] }, false)!;
+        var undoItem = MenuItem(undoMenu, "undo-record");
+        Require(undoItem.IsEnabled && MenuItem(undoMenu, "analyze").IsEnabled, "single record menu exposes independent undo and address analysis");
+        undoItem.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.MenuItem.ClickEvent));
+        WaitUntil(() => !_vm.IsBusy && Marshal.ReadInt32(_fixtureMemory) == 100, 5000);
+        Require(Marshal.ReadInt32(_fixtureMemory, 4) == 555 && Marshal.ReadInt32(_fixtureMemory, 8) == 555, "record menu undo restores only that record without undoing the earlier batch or other records");
+        fullGrid.SelectedItems.Clear(); fullGrid.SelectedItems.Add(fullGrid.Items[1]); fullGrid.SelectedItems.Add(fullGrid.Items[2]);
+        var fullUndo = Descendants<Button>((Border)_window.FindName("FullWatchCard")).Single(button => Equals(button.Content, "撤销所选"));
+        fullUndo.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        WaitUntil(() => !_vm.IsBusy && Marshal.ReadInt32(_fixtureMemory, 4) == 444 && Marshal.ReadInt32(_fixtureMemory, 8) == 100, 5000);
+        Require(Marshal.ReadInt32(_fixtureMemory) == 100, "toolbar batch undo rolls each selected record back one step and leaves the unselected record intact");
         resultGrid.SelectedItems.Add(resultGrid.Items[0]);
         LeftClick(fullGrid, (Grid)_window.FindName("MainShell"), 1);
         Require(resultGrid.SelectedItems.Count == 0 && compactGrid.SelectedItems.Count == 0 && fullGrid.SelectedItems.Count == 0, "real preview click on main content blank clears all record selections");
@@ -175,6 +188,8 @@ internal static class Program
         _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 2);
         _vm.SelectedScanMode = _vm.ScanModes.First(mode => mode.Value == 1);
         _vm.SearchValue = "";
+        Pump();
+        Require(!((TextBox)_window.FindName("SearchValueInput")).IsEnabled, "unknown initial scan disables the actual value input instead of accepting a misleading value");
         string boundedStart = _vm.StartAddress, boundedEnd = _vm.EndAddress;
         _vm.StartAddress = "0x00000000"; _vm.EndAddress = "0x00007FFFFFFFFFFF";
         Require(_vm.FirstScanCommand.CanExecute(null) && !_vm.NextScanCommand.CanExecute(null), "unknown with empty value and the default full range enables first scan without value validation");
@@ -184,6 +199,7 @@ internal static class Program
         await _vm.ScanAsync(false); Pump();
         Require(_vm.Results.Count == 200 && _vm.ResultSummary.Contains("1,024"), "unknown initial float scan ignores empty value and unused tolerance fields");
         Require(_vm.SelectedScanMode.Value == 2 && _vm.NextScanCommand.CanExecute(null) && !_vm.FirstScanCommand.CanExecute(null), "successful unknown switches to Changed with next-scan command enabled");
+        Require(!((TextBox)_window.FindName("SearchValueInput")).IsEnabled, "changed-value scan does not request an unused input value");
         Marshal.Copy(BitConverter.GetBytes(0.5f), 0, _fixtureMemory + 2000, 4);
         _vm.FloatToleranceText = "0.001"; _vm.RelativeToleranceText = "0.000001";
         await _vm.ScanAsync(true); Pump();
@@ -204,6 +220,8 @@ internal static class Program
         Marshal.Copy(Enumerable.Repeat(100, 1024).ToArray(), 0, _fixtureMemory, 1024);
         _vm.SelectedType = _vm.TypeOptions.First(type => type.Value == 2);
         _vm.SelectedScanMode = _vm.ScanModes.First(mode => mode.Value == 0); _vm.SearchValue = "100";
+        Pump();
+        Require(((TextBox)_window.FindName("SearchValueInput")).IsEnabled, "returning to exact mode re-enables the existing search value input");
         await _vm.ScanAsync(false);
         if (!await _vm.SelectAllScanResultsAsync()) throw new InvalidOperationException("restore full result fixture failed");
         Pump();
@@ -213,6 +231,14 @@ internal static class Program
     {
         ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 0;
         _window.Width = 1280; _window.Height = 820; Pump(); _window.UpdateLayout();
+        double initialWatchHeight = ((Border)_window.FindName("CompactWatchCard")).ActualHeight;
+        _window.Height = 1020; Pump(); _window.UpdateLayout();
+        Require(((Border)_window.FindName("CompactWatchCard")).ActualHeight > initialWatchHeight + 50, "scan-page address table grows when the window becomes taller");
+        ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 1; _window.Height = 820; Pump();
+        double initialFullHeight = ((Border)_window.FindName("FullWatchCard")).ActualHeight;
+        _window.Height = 1020; Pump();
+        Require(((Border)_window.FindName("FullWatchCard")).ActualHeight > initialFullHeight + 100, "full address table fills the additional window height");
+        ((TabControl)_window.FindName("WorkspaceTabs")).SelectedIndex = 0; _window.Height = 820; Pump(); _window.UpdateLayout();
         Render("ui-1280.png");
         _window.Width = 780; _window.Height = 520; Pump(); _window.UpdateLayout();
         CheckSidebar("780x520");

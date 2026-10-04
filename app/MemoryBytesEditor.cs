@@ -22,8 +22,8 @@ public sealed class MemoryBytesEditor : Window
         Title = "Memory Studio · " + title;
         Width = 750; Height = bitness.HasValue ? 440 : 330; MinWidth = 530; MinHeight = 300;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
-        Background = (System.Windows.Media.Brush)FindResource("BackgroundBrush");
-        Foreground = (System.Windows.Media.Brush)FindResource("TextBrush");
+        SetResourceReference(BackgroundProperty, "BackgroundBrush");
+        SetResourceReference(ForegroundProperty, "TextBrush");
         FontFamily = new("Microsoft YaHei UI, Segoe UI"); FontSize = 13;
         _length = original.Length;
         _address = address; _bitness = bitness;
@@ -31,6 +31,7 @@ public sealed class MemoryBytesEditor : Window
         foreach (var size in new[] { GridLength.Auto, GridLength.Auto, GridLength.Auto, new GridLength(1, GridUnitType.Star), GridLength.Auto, GridLength.Auto })
             root.RowDefinitions.Add(new() { Height = size });
         var heading = new TextBlock { Text = title, FontSize = 21, FontWeight = FontWeights.SemiBold };
+        heading.SetResourceReference(TextBlock.FontFamilyProperty, "HeadingFontFamily");
         root.Children.Add(heading);
         var description = new TextBlock { Text = $"0x{address:X16} · {original.Length} 字节。输入相同长度的十六进制机器码；写入后可撤销。", Margin = new(0, 12, 0, 12), TextWrapping = TextWrapping.Wrap };
         Grid.SetRow(description, 1); root.Children.Add(description);

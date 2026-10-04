@@ -3,11 +3,11 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Memory Studio · 地址访问来源" Width="1230" Height="790" MinWidth="1080" MinHeight="660"
         WindowStartupLocation="CenterOwner" UseLayoutRounding="True"
-        Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        Background="{DynamicResource BackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
     <Window.Resources>
         <Style x:Key="TraceCodeCell" TargetType="TextBlock" BasedOn="{StaticResource AddressCell}">
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}" />
         </Style>
     </Window.Resources>
@@ -18,10 +18,10 @@
         </Grid.RowDefinitions>
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock x:Name="HeadingLabel" Text="查找地址访问来源" FontSize="22" FontWeight="SemiBold" />
+            <StackPanel><TextBlock x:Name="HeadingLabel" Text="查找地址访问来源" FontFamily="{DynamicResource HeadingFontFamily}" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock x:Name="TargetLabel" Style="{StaticResource MutedText}" FontFamily="Consolas" Margin="0,7,0,0" /></StackPanel>
-            <Border Grid.Column="1" Background="{StaticResource AccentSoftBrush}" CornerRadius="5" Padding="12,6" VerticalAlignment="Top" Margin="0,4,0,0">
-                <TextBlock Text="LIVE / DEBUGGER" Foreground="{StaticResource AccentBrush}" FontFamily="Consolas" FontSize="11" />
+            <Border Grid.Column="1" Background="{DynamicResource AccentSoftBrush}" CornerRadius="5" Padding="12,6" VerticalAlignment="Top" Margin="0,4,0,0">
+                <TextBlock Text="LIVE / DEBUGGER" Foreground="{DynamicResource AccentTextBrush}" FontFamily="Consolas" FontSize="11" />
             </Border>
         </Grid>
         <Border Grid.Row="1" Style="{StaticResource Card}" Padding="15,12" Margin="0,0,0,12">
@@ -29,19 +29,20 @@
                        Style="{StaticResource MutedText}" TextWrapping="Wrap" LineHeight="20" />
         </Border>
         <Grid Grid.Row="2" Margin="0,0,0,12">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+            <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
             <Button x:Name="StartButton" Content="开始追踪" Style="{StaticResource PrimaryButton}" Click="StartButton_Click" />
             <Button Grid.Column="1" x:Name="StopButton" Content="停止并保留结果" Click="StopButton_Click" IsEnabled="False" Margin="9,0,0,0" />
             <Button Grid.Column="2" x:Name="ClearButton" Content="清空结果" Click="ClearButton_Click" Margin="9,0,0,0" />
             <TextBlock Grid.Column="3" x:Name="StatisticsLabel" Text="尚未开始" Style="{StaticResource MutedText}" FontSize="11" Margin="16,0,0,0" />
             <Button Grid.Column="4" x:Name="BrowseButton" Content="反汇编与数据内存" Style="{StaticResource GhostButton}" Click="BrowseButton_Click" ToolTip="双击来源也可打开；正在追踪时先停止解除附加，结果保留" />
             <Button Grid.Column="5" Content="复制选中" Style="{StaticResource GhostButton}" Click="CopyButton_Click" Margin="9,0,0,0" />
+            <Button Grid.Column="6" x:Name="AnalysisButton" Content="分析 / 导出" Style="{StaticResource CompactButton}" Click="AnalysisButton_Click" Margin="9,0,0,0" ToolTip="先安全停止追踪，再汇集指令、寄存器和命中快照" />
         </Grid>
         <Border Grid.Row="3" Style="{StaticResource Card}">
             <DataGrid x:Name="HitGrid" IsReadOnly="True" SelectionMode="Single" SelectionUnit="FullRow"
                       RowHeight="32" ColumnHeaderHeight="36" CanUserReorderColumns="False"
                       SelectionChanged="HitGrid_SelectionChanged" MouseDoubleClick="HitGrid_MouseDoubleClick" PreviewKeyDown="HitGrid_PreviewKeyDown" AutomationProperties.Name="捕获的地址访问指令">
-                <DataGrid.ContextMenu><ContextMenu><MenuItem Header="打开该指令的反汇编与数据内存" Click="BrowseButton_Click" /><Separator /><MenuItem Header="复制指令与访问范围" Click="CopyButton_Click" /></ContextMenu></DataGrid.ContextMenu>
+                <DataGrid.ContextMenu><ContextMenu><MenuItem Header="打开该指令的反汇编与数据内存" Click="BrowseButton_Click" /><MenuItem Header="分析所选来源 / 导出 AI 上下文" Click="AnalysisButton_Click" ToolTip="先安全停止追踪，再汇集指令、寄存器和命中快照" /><Separator /><MenuItem Header="复制指令与访问范围" Click="CopyButton_Click" /></ContextMenu></DataGrid.ContextMenu>
                 <DataGrid.Columns>
                     <DataGridTextColumn Header="指令地址" Binding="{Binding AddressText}" Width="170" ElementStyle="{StaticResource AddressCell}" />
                     <DataGridTextColumn Header="机器码" Binding="{Binding BytesText}" Width="195" ElementStyle="{StaticResource TraceCodeCell}" />

@@ -2,7 +2,7 @@ using System.Diagnostics;
 
 namespace MemoryStudio;
 
-public sealed record MemoryChange(ulong Address, byte[] Before, byte[] After, bool Code);
+public sealed record MemoryChange(ulong Address, byte[] Before, byte[] After, bool Code, object? RecordKey = null, long Sequence = 0);
 public sealed record MemoryUndoResult(int Attempted, int Restored, IReadOnlyList<string> Errors, string Description, IReadOnlyList<MemoryChange> Changes);
 
 /// <summary>Shared by all windows attached to the same live process. Freeze refreshes are never recorded.</summary>
@@ -16,6 +16,7 @@ public sealed class MemoryEditHistory
     private Entry? _batch;
     private readonly AsyncLocal<Entry?> _batchContext = new();
     private long _bytes;
+    private long _sequence;
     private readonly Dictionary<WatchRow, ulong> _trackedWatches = [];
     private readonly SortedSet<ulong> _frozenAddresses = [];
     private readonly Dictionary<ulong, HashSet<WatchRow>> _frozenWatches = [];
@@ -28,6 +29,19 @@ public sealed class MemoryEditHistory
     public string UndoDescription => _publishedDescription;
     public DateTime LatestTimestamp => new(Interlocked.Read(ref _publishedTimestamp), DateTimeKind.Utc);
     public int Count => _publishedCount;
+    public long AllocateRecordSequence() => Interlocked.Increment(ref _sequence);
+    public long LatestRecordSequence(object recordKey)
+    {
+        lock (_gate) return _entries.SelectMany(e => e.Changes).Where(c => Equals(c.RecordKey, recordKey)).Select(c => c.Sequence).DefaultIfEmpty().Max();
+    }
+    internal void SynchronizeRecord(Action action)
+    {
+        lock (_gate)
+        {
+            if (_batch != null) throw new InvalidOperationException("请等待当前修改完成后再编辑记录。");
+            action();
+        }
+    }
     private void PublishState()
     {
         _publishedDescription = _entries.LastOrDefault()?.Description ?? "";
@@ -113,7 +127,7 @@ public sealed class MemoryEditHistory
         }
     }
 
-    public void Write(NativeEngine engine, ulong address, byte[] bytes, string description, bool code = false)
+    public void Write(NativeEngine engine, ulong address, byte[] bytes, string description, bool code = false, object? recordKey = null)
     {
         ArgumentNullException.ThrowIfNull(engine);
         if (bytes.Length is < 1 or > 1024 * 1024) throw new ArgumentException("单次内存修改长度须在 1 字节至 1 MB 之间。");
@@ -129,12 +143,12 @@ public sealed class MemoryEditHistory
                 try
                 {
                     byte[] current = engine.Read(address, bytes.Length);
-                    if (!original.SequenceEqual(current)) { Record(new(address, original, current, code), description); UpdateFrozenTargets(engine, address, current.Length); }
+                    if (!original.SequenceEqual(current)) { Record(new(address, original, current, code, recordKey, AllocateRecordSequence()), description); UpdateFrozenTargets(engine, address, current.Length); }
                 }
                 catch { }
                 throw;
             }
-            Record(new(address, original, bytes.ToArray(), code), description);
+            Record(new(address, original, bytes.ToArray(), code, recordKey, AllocateRecordSequence()), description);
             // Serialize freeze maintenance with edits from every browser. Updating this atomic
             // value property also lets WPF marshal its PropertyChanged notification to the UI.
             UpdateFrozenTargets(engine, address, bytes.Length);
@@ -189,6 +203,53 @@ public sealed class MemoryEditHistory
             if (failed.Count > 0) Add(entry with { Changes = failed.AsEnumerable().Reverse().ToList() });
             PublishState();
             return new(entry.Changes.Count, restored.Count, errors, entry.Description, restored);
+        }
+    }
+    /// <summary>Undo one latest write per key. Later unselected overlapping writes protect their bytes.</summary>
+    public MemoryUndoResult UndoRecords(NativeEngine engine, IReadOnlyCollection<object> recordKeys)
+    {
+        ArgumentNullException.ThrowIfNull(engine); ArgumentNullException.ThrowIfNull(recordKeys);
+        lock (_gate)
+        {
+            if (_batch != null) throw new InvalidOperationException("请等待当前修改完成后再撤销。");
+            var keys = recordKeys.ToHashSet();
+            var all = _entries.SelectMany(e => e.Changes).ToArray();
+            var selected = all.Where(c => c.RecordKey != null && keys.Contains(c.RecordKey))
+                .GroupBy(c => c.RecordKey!).Select(g => g.MaxBy(c => c.Sequence)!).OrderByDescending(c => c.Sequence).ToArray();
+            var selectedSet = selected.ToHashSet(ReferenceEqualityComparer.Instance);
+            var restored = new List<MemoryChange>(); var failed = new List<MemoryChange>(); var errors = new List<string>();
+            // Resolve dependencies before changing memory. An unrelated later patch is never implicitly undone.
+            var blocked = selected.Where(c => all.Any(later => later.Sequence > c.Sequence && !selectedSet.Contains(later) && Overlaps(c, later))).ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var change in selected)
+            {
+                if (blocked.Contains(change) || failed.Any(later => Overlaps(change, later)))
+                {
+                    failed.Add(change); errors.Add($"0x{change.Address:X}: 存在后续未撤销的重叠修改，请先撤销对应记录或代码补丁；此步已保留。"); continue;
+                }
+                try
+                {
+                    // The user requested restoration of this edit's previous value.
+                    // A running target may have changed its bytes since the edit; only
+                    // recorded later overlapping edits impose an undo dependency.
+                    _ = engine.Read(change.Address, change.Before.Length);
+                    if (change.Code) engine.WriteCode(change.Address, change.Before); else engine.Write(change.Address, change.Before);
+                    restored.Add(change); UpdateFrozenTargets(engine, change.Address, change.Before.Length);
+                }
+                catch (Exception ex)
+                {
+                    UpdateFrozenTargets(engine, change.Address, change.Before.Length);
+                    failed.Add(change); errors.Add($"0x{change.Address:X}: {ex.Message}");
+                }
+            }
+            var remove = restored.ToHashSet(ReferenceEqualityComparer.Instance);
+            foreach (var entry in _entries.ToArray())
+            {
+                foreach (var change in entry.Changes.Where(remove.Contains).ToArray())
+                { _bytes -= (long)change.Before.Length + change.After.Length; entry.Changes.Remove(change); }
+                if (entry.Changes.Count == 0) _entries.Remove(entry);
+            }
+            PublishState();
+            return new(selected.Length, restored.Count, errors, "所选记录的最近写入", restored);
         }
     }
     private static bool Overlaps(MemoryChange left, MemoryChange right) =>

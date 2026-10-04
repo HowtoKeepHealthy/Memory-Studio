@@ -95,7 +95,7 @@ public partial class MainWindow : Window
             double pageWidth = Math.Max(700, width - RailColumn.Width.Value - WorkspaceTabs.Margin.Left - WorkspaceTabs.Margin.Right - 12);
             ScanPageLayout.Width = pageWidth;
             double bodyHeight = Math.Max(150, MainShell.ActualHeight - MainHeaderRow.ActualHeight - 58);
-            CompactWatchCard.Height = Math.Max(200, 200 * AppearanceSettings.Current.FontSize / 13);
+            CompactWatchCard.Height = Math.Max(Math.Max(200, 200 * AppearanceSettings.Current.FontSize / 13), (bodyHeight - 60) * 0.4);
             ResultsCard.Height = Math.Max(300, bodyHeight - CompactWatchCard.Height - 60);
             ScanSettingsFields.Visibility = _settingsExpanded ? Visibility.Visible : Visibility.Collapsed;
             ScanSettingsCard.Height = _settingsExpanded ? ResultsCard.Height : double.NaN;
@@ -162,7 +162,9 @@ public partial class MainWindow : Window
             menu.Items.Add(item);
         }
         Add("手动添加地址…", nameof(MainViewModel.AddManualAddressCommand));
-        Add("撤销上次编辑", nameof(MainViewModel.UndoEditCommand));
+        var undo = new MenuItem { Header = "撤销所选记录", Style = (Style)FindResource("RecordMenuItem"), IsEnabled = !vm.IsBusy && vm.CanUndoRecords(ActiveRecordSelection()) };
+        undo.Click += UndoSelectedRecords_Click;
+        menu.Items.Add(undo);
         Add("撤销上次扫描", nameof(MainViewModel.UndoScanCommand));
         Add(vm.PauseButtonText, nameof(MainViewModel.TogglePauseCommand));
         AddMenuSeparator(menu);
@@ -391,6 +393,12 @@ public partial class MainWindow : Window
 
     private async void RecordGrid_PreviewKeyDown(object sender, KeyEventArgs e)
     {
+        if (sender is DataGrid undoGrid && e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.Control)
+        {
+            e.Handled = true;
+            await UndoSelectedRecordsAsync(undoGrid);
+            return;
+        }
         if (sender is DataGrid grid && e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.Control)
         {
             e.Handled = true;
@@ -403,6 +411,27 @@ public partial class MainWindow : Window
     private async void SelectAllScanResults_Click(object sender, RoutedEventArgs e) => await SelectAllScanRecordsAsync();
     private void SelectAllCompactWatch_Click(object sender, RoutedEventArgs e) => SelectAllRecords(CompactWatchGrid);
     private void SelectAllFullWatch_Click(object sender, RoutedEventArgs e) => SelectAllRecords(FullWatchGrid);
+
+    private object[] ActiveRecordSelection()
+    {
+        DataGrid grid = WorkspaceTabs.SelectedIndex == 1 ? FullWatchGrid :
+            ResultGrid.IsKeyboardFocusWithin ? ResultGrid : CompactWatchGrid.SelectedItems.Count > 0 ? CompactWatchGrid : ResultGrid;
+        return grid.SelectedItems.Cast<object>().Where(row => row is ResultRow or WatchRow).ToArray();
+    }
+    private async void UndoSelectedRecords_Click(object sender, RoutedEventArgs e)
+    {
+        DataGrid? grid = sender is DependencyObject source ? FindAncestor<Border>(source)?.Name switch
+        { "CompactWatchCard" => CompactWatchGrid, "FullWatchCard" => FullWatchGrid, _ => null } : null;
+        if (DataContext is MainViewModel vm)
+            try { await vm.UndoRecordsAsync(grid?.SelectedItems.Cast<object>().ToArray() ?? ActiveRecordSelection()); }
+            catch (Exception ex) { vm.SetStatus("撤销所选记录未完成：" + ex.Message); }
+    }
+    private async Task UndoSelectedRecordsAsync(DataGrid grid)
+    {
+        if (DataContext is not MainViewModel vm) return;
+        try { await vm.UndoRecordsAsync(grid.SelectedItems.Cast<object>().Where(row => row is ResultRow or WatchRow).ToArray()); }
+        catch (Exception ex) { vm.SetStatus("撤销所选记录未完成：" + ex.Message); }
+    }
 
     private void SelectAllRecords(DataGrid grid)
     {
@@ -443,6 +472,8 @@ public partial class MainWindow : Window
         SetSingleRecordOnly(AddMenuItem(menu, "编辑地址…", "edit-address", busy, multiple ? "仅单条" : "双击地址"), multiple);
         AddMenuItem(menu, multiple ? "批量更改数据类型…" : "更改数据类型…", "edit-type", busy, multiple ? "" : "双击类型");
         if (watches) AddMenuItem(menu, multiple ? "批量编辑描述…" : "编辑描述…", "edit-description", busy);
+        var undoRecord = AddMenuItem(menu, multiple ? "各自撤销所选记录的最近一次编辑" : "撤销此记录的最近一次编辑", "undo-record", busy, "Ctrl+Z");
+        undoRecord.IsEnabled = !busy && DataContext is MainViewModel vm && vm.CanUndoRecords(records);
         AddMenuSeparator(menu);
         if (!watches)
             AddMenuItem(menu, multiple ? $"添加所选结果到地址表（{records.Length:N0} 项）" : "添加到地址表", "add-watch", busy);
@@ -464,6 +495,7 @@ public partial class MainWindow : Window
         AddMenuSeparator(menu);
         SetSingleRecordOnly(AddMenuItem(menu, "内存查看器", "hex", busy), multiple);
         SetSingleRecordOnly(AddMenuItem(menu, "反汇编", "disassemble", busy), multiple);
+        SetSingleRecordOnly(AddMenuItem(menu, "分析地址 / 导出 AI 上下文…", "analyze", busy), multiple, "汇集数据、模块、附近指令及已捕获的读写证据，可离线查看或导出供 AI 分析。");
         AddMenuSeparator(menu);
         SetSingleRecordOnly(AddMenuItem(menu, "查找写入来源…", "trace-write", busy), multiple, "定位执行写入此地址的指令，包括会写回结果的读改写指令。");
         SetSingleRecordOnly(AddMenuItem(menu, "查找访问来源（读取/写入）…", "trace-access", busy), multiple, "捕获读取和写入，并按指令标记实际访问类型；读改写指令也会出现。");

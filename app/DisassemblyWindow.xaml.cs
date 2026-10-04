@@ -303,6 +303,23 @@ public partial class DisassemblyWindow : Window
         }
         catch (Exception ex) { StatusLabel.Text = "无法打开数据内存：" + ex.Message; }
     }
+    private void AnalysisButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_loading || InstructionGrid.SelectedItem is not DisassemblyRow row) return;
+        try
+        {
+            var engine = new NativeEngine(_processId);
+            try
+            {
+                bool known = !row.IsBoundaryUncertain && !row.IsInvalid && !row.IsTruncated;
+                var request = new MemoryAnalysisRequest(_processId, row.Address, 8, Math.Max(1, row.Length), "选中的反汇编指令",
+                    known ? row.Address : null, known ? "反汇编浏览器已提供的指令起点；未证明本次执行" : null);
+                new MemoryAnalysisWindow(engine, request, ownsEngine: true) { Owner = this }.Show();
+            }
+            catch { engine.Dispose(); throw; }
+        }
+        catch (Exception ex) { StatusLabel.Text = "无法打开地址分析：" + ex.Message; }
+    }
     private DisassemblyRow[] PatchSelection()
     {
         var rows = InstructionGrid.SelectedItems.Cast<DisassemblyRow>().OrderBy(r => r.Address).ToArray();

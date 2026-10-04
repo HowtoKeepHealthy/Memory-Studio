@@ -3,13 +3,13 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Memory Studio · 内存查看器" Width="1040" Height="720" MinWidth="880" MinHeight="500"
         WindowStartupLocation="CenterOwner" UseLayoutRounding="True"
-        Background="{StaticResource BackgroundBrush}" Foreground="{StaticResource TextBrush}"
+        Background="{DynamicResource BackgroundBrush}" Foreground="{DynamicResource TextBrush}"
         FontFamily="Microsoft YaHei UI, Segoe UI" FontSize="13">
     <Window.Resources>
         <Style x:Key="HexByte" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Cascadia Mono, Consolas" />
             <Setter Property="FontSize" Value="12" />
-            <Setter Property="Foreground" Value="{StaticResource TextBrush}" />
+            <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
             <Setter Property="HorizontalAlignment" Value="Center" />
             <Setter Property="VerticalAlignment" Value="Center" />
         </Style>
@@ -20,8 +20,8 @@
         <Grid.RowDefinitions><RowDefinition Height="55" /><RowDefinition Height="67" /><RowDefinition Height="43" /><RowDefinition Height="*" /><RowDefinition Height="38" /></Grid.RowDefinitions>
         <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-            <StackPanel><TextBlock Text="内存查看器" FontSize="22" FontWeight="SemiBold" /><TextBlock Text="跳转、刷新与编辑原始字节；双击字节即可修改，写入后可撤销" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel>
-            <Border Grid.Column="1" CornerRadius="5" Background="{StaticResource AccentSoftBrush}" Padding="10,5" VerticalAlignment="Top" Margin="0,4,0,0"><TextBlock Text="HEX  /  ASCII" FontFamily="Consolas" FontSize="11" Foreground="{StaticResource AccentBrush}" /></Border>
+            <StackPanel><TextBlock Text="内存查看器" FontFamily="{DynamicResource HeadingFontFamily}" FontSize="22" FontWeight="SemiBold" /><TextBlock Text="跳转、刷新与编辑原始字节；双击字节即可修改，写入后可撤销" Style="{StaticResource MutedText}" Margin="0,4,0,0" /></StackPanel>
+            <Border Grid.Column="1" CornerRadius="5" Background="{DynamicResource AccentSoftBrush}" Padding="10,5" VerticalAlignment="Top" Margin="0,4,0,0"><TextBlock Text="HEX  /  ASCII" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource AccentTextBrush}" /></Border>
         </Grid>
         <Grid Grid.Row="1" Margin="0,12,0,15">
             <Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="270" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>

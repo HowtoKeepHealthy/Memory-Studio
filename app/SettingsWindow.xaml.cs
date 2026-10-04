@@ -15,6 +15,7 @@ public partial class SettingsWindow : Window
         AppearanceSettings.Current.ScalePercent = 100;
         AppearanceSettings.Current.FontSize = 13;
         AppearanceSettings.Current.RememberWindowSize = true;
+        AppearanceSettings.Current.ThemeId = "dark";
     }
     private void Done_Click(object sender, RoutedEventArgs e) => Close();
 }

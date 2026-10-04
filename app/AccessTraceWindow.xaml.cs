@@ -24,6 +24,18 @@ public partial class AccessTraceWindow : Window
     // During an asynchronous attach/detach, avoid blocking the dispatcher on the service lock.
     public bool HasProtectedPages => _transition || _service?.State.IsAttached == true;
     public Func<Task>? BeforeStart { get; set; }
+    public IReadOnlyList<AccessTraceHit> SnapshotCapturedHits()
+    {
+        Dispatcher.VerifyAccess();
+        return _rows.ToArray();
+    }
+    public async Task<IReadOnlyList<AccessTraceHit>> StopAndSnapshotForAnalysisAsync()
+    {
+        while (_transition && (_stopTask == null || _stopTask.IsCompleted)) await Task.Delay(20);
+        await StopAsync();
+        if (_service?.State.IsAttached == true) throw new InvalidOperationException("来源追踪尚未安全解除附加，请重试停止后再生成分析报告。");
+        return SnapshotCapturedHits();
+    }
 
     public AccessTraceWindow(int processId, ulong address, int size, bool writesOnly)
     {
@@ -179,6 +191,7 @@ public partial class AccessTraceWindow : Window
         StopButton.IsEnabled = !_transition && !_closing && attached;
         ClearButton.IsEnabled = !_transition && !_closing && !attached;
         BrowseButton.IsEnabled = !_transition && !_closing && !_browsing && HitGrid.SelectedItem is AccessTraceHit;
+        AnalysisButton.IsEnabled = BrowseButton.IsEnabled;
     }
 
     private void UpdateStatistics()
@@ -238,6 +251,30 @@ public partial class AccessTraceWindow : Window
         _browsers.Add(window);
         window.Closed += (_, _) => { _browsers.Remove(window); if (!_allowClose) SetButtons(); };
     }
+    public async Task AnalyzeSelectedAsync()
+    {
+        if (_transition || _closing || _browsing || HitGrid.SelectedItem is not AccessTraceHit hit) return;
+        _browsing = true; SetButtons();
+        try
+        {
+            await StopAsync();
+            if (_closing || _service?.State.IsAttached == true)
+            { if (!_closing) StatusLabel.Text = "调试附加尚未解除；请先完成停止，再分析所选来源。"; return; }
+            var evidence = SnapshotCapturedHits().Select(item => MemoryTraceEvidence.FromHit(_processId, item)).ToArray();
+            var request = new MemoryAnalysisRequest(_processId, _address, 8, _size, "捕获的地址访问来源",
+                hit.InstructionPointer, "PAGE_GUARD 捕获的实际指令 IP", evidence);
+            var engine = new NativeEngine(_processId);
+            MemoryAnalysisWindow analysis;
+            try { analysis = new MemoryAnalysisWindow(engine, request, ownsEngine: true) { Owner = this }; }
+            catch { engine.Dispose(); throw; }
+            TrackBrowser(analysis);
+            try { analysis.Show(); } catch { _browsers.Remove(analysis); engine.Dispose(); throw; }
+            StatusLabel.Text = "已安全停止追踪，分析报告包含捕获证据与停止后的代码/数据快照，可复制或导出供 AI 分析。";
+        }
+        catch (Exception ex) { StatusLabel.Text = "来源分析未完成：" + ex.Message; }
+        finally { _browsing = false; SetButtons(); }
+    }
+    private async void AnalysisButton_Click(object sender, RoutedEventArgs e) => await AnalyzeSelectedAsync();
     private async void BrowseButton_Click(object sender, RoutedEventArgs e) => await BrowseSelectedAsync();
     private async void HitGrid_MouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
